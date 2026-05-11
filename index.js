@@ -413,78 +413,6 @@ bot.onText(/\/start/, async (msg) => {
   );
 });
 
-bot.on("message", async (msg) => {
-  if (String(msg.from.id) !== ADMIN_ID) return;
-
-  const text = msg.text;
-
-  if (!text) return;
-  if (text === "/start") return;
-
-  if (text === "➕ Добавить WhatsApp") {
-    waitingForWhatsApp.add(msg.from.id);
-
-    await bot.sendMessage(
-      msg.chat.id,
-      `📱 Введи номер WhatsApp
-
-Пример:
-380998338356`
-    );
-
-    return;
-  }
-
-  if (waitingForWhatsApp.has(msg.from.id)) {
-    const phone = text.replace(/[^\d]/g, "");
-
-    if (!phone || phone.length < 8) {
-      await bot.sendMessage(
-        msg.chat.id,
-        `❌ Неверный номер. Введи только цифры.
-
-Пример:
-380998338356`
-      );
-
-      return;
-    }
-
-    waitingForWhatsApp.delete(msg.from.id);
-
-    await saveStatus(phone, "starting");
-
-    await bot.sendMessage(
-      msg.chat.id,
-      `⏳ Запускаю WhatsApp ${phone}`
-    );
-
-    await startWhatsApp(phone, msg.chat.id);
-
-    return;
-  }
-
-  if (text === "➕ Добавить Telegram") {
-    await bot.sendMessage(
-      msg.chat.id,
-      "Telegram-сессии допилим после WhatsApp."
-    );
-
-    return;
-  }
-
-  if (text === "📊 Статус") {
-    bot.processUpdate({
-      message: {
-        ...msg,
-        text: "/status"
-      }
-    });
-
-    return;
-  }
-});
-
 bot.onText(/\/status/, async (msg) => {
   if (String(msg.from.id) !== ADMIN_ID) {
     return;
@@ -507,7 +435,7 @@ bot.onText(/\/status/, async (msg) => {
     return;
   }
 
-  if (!data.length) {
+  if (!data || !data.length) {
     await bot.sendMessage(
       msg.chat.id,
       `Нет WhatsApp`
@@ -535,42 +463,6 @@ bot.onText(/\/status/, async (msg) => {
 ${text}`
   );
 });
-
-setInterval(async () => {
-  const { data } =
-    await supabase
-      .from("wa_accounts")
-      .select("*")
-      .order("created_at", {
-        ascending: false
-      });
-
-  if (!data || !data.length) {
-    return;
-  }
-
-  const text = data.map(acc => {
-    let icon = "⚪";
-
-    if (acc.status === "connected") icon = "🟢";
-    if (acc.status === "need_qr") icon = "📲";
-    if (acc.status === "logged_out") icon = "⛔";
-    if (acc.status === "disconnected") icon = "🔴";
-    if (acc.status === "starting") icon = "⏳";
-
-    return `${icon} ${acc.phone} — ${acc.status}`;
-  }).join("\n");
-
-  await bot.sendMessage(
-    REPORT_CHAT_ID,
-    `📊 WA Checker Report
-
-${text}
-
-${new Date().toLocaleString()}`
-  );
-
-}, 60 * 60 * 1000);
 
 async function autoLoadSessions() {
   const { data, error } =
