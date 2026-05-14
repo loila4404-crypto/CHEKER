@@ -1,3 +1,6 @@
-git remote add origin https://github.com/loila4404-crypto/CHECKER.git
-git branch -M main
-git push -u origin main
+node_modules/
+sessions/
+.env
+google-service.json
+*.tar.gz
+*.enc
