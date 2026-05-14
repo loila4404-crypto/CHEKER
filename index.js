@@ -1,28 +1,69 @@
 require("dotenv").config();
+const {
+  readAccountsFromSheet,
+  updateSheetRow,
+  appendSheetRow,
+  readTelegramFromSheet,
+  updateTelegramSheetRow,
+  clearWhatsAppSheetRow,
+  clearTelegramSheetRow
+} = require("./services/googleSheets");
 
 const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
-const P = require("pino");
-const QRCode = require("qrcode");
-const { SocksProxyAgent } = require("socks-proxy-agent");
 
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
-const crypto = require("crypto");
-const tar = require("tar");
 
 const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason
-} = require("@whiskeysockets/baileys");
+  registerTelegramHandlers
+} = require("./handlers/telegramHandlers");
+
+const {
+  autoLoadSessions
+} = require("./services/autoload");
+
+const {
+  getTelegramApiApp
+} = require("./services/telegramApi");
+
+const {
+  isAdmin
+} = require("./services/admins");
+
+const {
+  markSheetBanAndReport
+} = require("./services/reports");
+
+const {
+  startWhatsApp
+} = require("./services/whatsapp");
+
+const {
+  saveStatus
+} = require("./services/waAccounts");
+
+const {
+  registerHealthRoutes
+} = require("./routes/health");
+
+const {
+  getProxyForPhone
+} = require("./services/proxy");
+
+const {
+  uploadSessionToStorage,
+  restoreSessionFromStorage
+} = require("./services/storage");
+
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = String(process.env.ADMIN_ID);
 const REPORT_CHAT_ID = process.env.REPORT_CHAT_ID;
 const SESSION_SECRET = process.env.SESSION_SECRET;
+const BOT_MODE = process.env.BOT_MODE || "main";
 const SESSION_BUCKET = "wa-sessions";
 
 const supabase = createClient(
@@ -31,50 +72,66 @@ const supabase = createClient(
 );
 
 const bot = new TelegramBot(BOT_TOKEN, {
-  polling: true
+  ppolling: BOT_MODE === "main"
 });
 
 const app = express();
 
 const waitingForWhatsApp = new Set();
+const waitingForDelete = new Set();
+const clientWaState = new Map();
 const activeSessions = new Map();
 const saveTimers = new Map();
+const tgUsers = new Set();
 
-app.get("/", (req, res) => {
-  res.send("WA Checker is alive");
-});
+let waSheetIntervalMs = 30 * 60 * 1000;
+let waSheetIntervalTimer = null;
 
-app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    time: new Date().toISOString()
+registerHealthRoutes(app);
+
+if (BOT_MODE === "main") {
+  registerTelegramHandlers({
+    bot,
+    supabase,
+    isAdmin,
+    ADMIN_ID,
+    clientWaState,
+    waitingForDelete,
+    deleteAccountFromSystem,
+    markTelegramActiveByUsername,
+    makeToken,
+    getWaSheetIntervalMs: () => waSheetIntervalMs,
+    setWaSheetIntervalMs: (value) => {
+      waSheetIntervalMs = value;
+    },
+    startWaSheetAutoImportInterval,
+    appendSheetRow,
+    readAccountsFromSheet,
+    updateSheetRow,
+    readTelegramFromSheet,
+    updateTelegramSheetRow,
+    markSheetBanAndReport,
+    tgUsers
   });
-});
+}
 
 app.listen(process.env.PORT || 3000, () => {
   console.log("Health server started");
 });
-
-async function saveStatus(phone, status, error = null) {
-  await supabase
-    .from("wa_accounts")
-    .upsert({
-      phone,
-      status,
-      last_seen: new Date().toISOString(),
-      last_error: error,
-      session_path: `sessions/wa_${phone}`,
-      updated_at: new Date().toISOString()
-    }, {
-      onConflict: "phone"
-    });
-}
 
 function getKey() {
   return crypto
     .createHash("sha256")
     .update(SESSION_SECRET)
     .digest();
+}
+
+const nodeCrypto = require("crypto");
+
+function makeToken() {
+  return nodeCrypto
+    .randomBytes(6)
+    .toString("hex");
 }
 
 function encryptBuffer(buffer) {
@@ -115,90 +172,6 @@ function decryptBuffer(buffer) {
   ]);
 }
 
-async function uploadSessionToStorage(phone) {
-  if (!SESSION_SECRET) {
-    console.log("SESSION_SECRET is missing");
-    return;
-  }
-
-  const sessionDir = path.join(__dirname, "sessions", `wa_${phone}`);
-
-  if (!fs.existsSync(sessionDir)) {
-    return;
-  }
-
-  const tmpTar = path.join(__dirname, `wa_${phone}.tar.gz`);
-  const storagePath = `wa_${phone}/session.tar.gz.enc`;
-
-  await tar.c(
-    {
-      gzip: true,
-      file: tmpTar,
-      cwd: path.join(__dirname, "sessions")
-    },
-    [`wa_${phone}`]
-  );
-
-  const raw = await fsp.readFile(tmpTar);
-  const encrypted = encryptBuffer(raw);
-
-  const { error } = await supabase.storage
-    .from(SESSION_BUCKET)
-    .upload(storagePath, encrypted, {
-      upsert: true,
-      contentType: "application/octet-stream"
-    });
-
-  await fsp.unlink(tmpTar).catch(() => {});
-
-  if (error) {
-    console.log(`Upload session error ${phone}:`, error.message);
-    return;
-  }
-
-  console.log(`Session ${phone} uploaded to Supabase Storage`);
-}
-
-async function restoreSessionFromStorage(phone) {
-  if (!SESSION_SECRET) {
-    console.log("SESSION_SECRET is missing");
-    return;
-  }
-
-  const sessionRoot = path.join(__dirname, "sessions");
-  const sessionDir = path.join(sessionRoot, `wa_${phone}`);
-  const tmpTar = path.join(__dirname, `restore_${phone}.tar.gz`);
-  const storagePath = `wa_${phone}/session.tar.gz.enc`;
-
-  if (fs.existsSync(sessionDir)) {
-    return;
-  }
-
-  const { data, error } = await supabase.storage
-    .from(SESSION_BUCKET)
-    .download(storagePath);
-
-  if (error || !data) {
-    console.log(`No saved session for ${phone}`);
-    return;
-  }
-
-  await fsp.mkdir(sessionRoot, { recursive: true });
-
-  const encrypted = Buffer.from(await data.arrayBuffer());
-  const decrypted = decryptBuffer(encrypted);
-
-  await fsp.writeFile(tmpTar, decrypted);
-
-  await tar.x({
-    file: tmpTar,
-    cwd: sessionRoot
-  });
-
-  await fsp.unlink(tmpTar).catch(() => {});
-
-  console.log(`Session ${phone} restored from Supabase Storage`);
-}
 
 function scheduleSessionUpload(phone) {
   if (saveTimers.has(phone)) {
@@ -206,304 +179,541 @@ function scheduleSessionUpload(phone) {
   }
 
   const timer = setTimeout(async () => {
-    await uploadSessionToStorage(phone);
+    await uploadSessionToStorage({
+      phone,
+      supabase,
+      sessionSecret: SESSION_SECRET,
+      bucket: SESSION_BUCKET
+    });
+
     saveTimers.delete(phone);
   }, 5000);
 
   saveTimers.set(phone, timer);
 }
 
-async function getProxyForPhone(phone) {
-  const { data: account } = await supabase
-    .from("wa_accounts")
-    .select("proxy_id")
-    .eq("phone", phone)
-    .single();
+let sheetAutoImportRunning = false;
 
-  if (account?.proxy_id) {
-    const { data: proxy } = await supabase
-      .from("proxies")
+async function autoImportWhatsAppFromSheet() {
+  if (sheetAutoImportRunning) return;
+
+  sheetAutoImportRunning = true;
+
+  try {
+    const rows = await readAccountsFromSheet();
+
+    for (let i = 0; i < rows.length; i++) {
+      const rowNumber = i + 2;
+
+      const id = rows[i][0] || "";
+      const type = rows[i][1] || "";
+      const account = rows[i][2] || "";
+      const status = rows[i][3] || "";
+      const adName = rows[i][4] || "";
+      const operator = rows[i][5] || "";
+
+      if (type !== "WhatsApp") continue;
+      if (status !== "CONNECTION") continue;
+      if (!account) continue;
+
+      const phone = String(account).replace(/[^\d]/g, "");
+
+      if (!phone || phone.length < 8) continue;
+
+      const { data: existing } = await supabase
+        .from("wa_accounts")
+        .select("*")
+        .eq("phone", phone)
+        .single();
+
+      if (!existing) continue;
+
+      await updateSheetRow(rowNumber, [
+        existing.id || id,
+        "WhatsApp",
+        phone,
+        "ACTIVE",
+        adName,
+        operator
+      ]);
+
+      console.log(`Sheet WA activated: ${phone}`);
+    }
+  } catch (err) {
+    console.log("autoImportWhatsAppFromSheet error:", err.message);
+  } finally {
+    sheetAutoImportRunning = false;
+  }
+}
+
+function startWaSheetAutoImportInterval() {
+  if (waSheetIntervalTimer) {
+    clearInterval(waSheetIntervalTimer);
+  }
+
+  waSheetIntervalTimer = setInterval(
+    autoImportWhatsAppFromSheet,
+    waSheetIntervalMs
+  );
+
+  console.log(
+    `WA Sheet auto import interval: ${waSheetIntervalMs / 60000} min`
+  );
+}
+
+startWaSheetAutoImportInterval();
+
+async function markTelegramActiveByUsername(username) {
+  if (!username) return;
+
+  const cleanUsername = String(username)
+    .replace("@", "")
+    .trim()
+    .toLowerCase();
+
+  if (!cleanUsername) return;
+
+  try {
+    const { data: tgUser } = await supabase
+      .from("tg_group_users")
       .select("*")
-      .eq("id", account.proxy_id)
-      .eq("active", true)
+      .or(
+        `username.ilike.${cleanUsername},username.ilike.@${cleanUsername}`
+      )
+      .limit(1)
       .single();
 
-    return proxy || null;
+    if (!tgUser) {
+      return;
+    }
+
+    const rows =
+      await readTelegramFromSheet();
+
+    for (let i = 0; i < rows.length; i++) {
+      const rowNumber = i + 3;
+
+      const id = rows[i][0] || "";
+      const type = rows[i][1] || "";
+      const account =
+        rows[i][2] || "";
+      const status =
+        rows[i][3] || "";
+      const adName =
+        rows[i][4] || "";
+      const operator =
+        rows[i][5] || "";
+
+      const sheetUsername = String(account)
+        .replace("@", "")
+        .trim()
+        .toLowerCase();
+
+      if (type !== "Telegramm") {
+        continue;
+      }
+
+      if (
+        sheetUsername !== cleanUsername
+      ) {
+        continue;
+      }
+
+      if (status !== "CONNECTION") {
+        continue;
+      }
+
+      await updateTelegramSheetRow(
+        rowNumber,
+        [
+          tgUser.user_id || id,
+          "Telegramm",
+          account,
+          "ACTIVE",
+          adName,
+          operator
+        ]
+      );
+
+      console.log(
+        `TG activated from sheet: ${cleanUsername}`
+      );
+
+      return;
+    }
+  } catch (err) {
+    console.log(
+      "markTelegramActiveByUsername error:",
+      err.message
+    );
+  }
+}
+
+async function deleteAccountFromSystem(input, chatId) {
+  const raw = String(input || "").trim();
+
+  if (!raw) {
+    await bot.sendMessage(
+      chatId,
+      "❌ Пустое значение."
+    );
+
+    return;
   }
 
-  const { data: proxies, error } = await supabase
-    .from("proxies")
-    .select("*")
-    .eq("active", true);
+  const onlyDigits = raw.replace(/[^\d]/g, "");
+  const isPhone = onlyDigits.length >= 8;
 
-  if (error || !proxies || !proxies.length) {
-    return null;
+  // WhatsApp
+  if (isPhone) {
+    const phone = onlyDigits;
+
+    await supabase
+      .from("wa_accounts")
+      .delete()
+      .eq("phone", phone);
+
+    try {
+      await supabase.storage
+        .from(SESSION_BUCKET)
+        .remove([
+          `wa_${phone}/session.tar.gz.enc`
+        ]);
+    } catch (err) {
+      console.log(
+        "WA session remove error:",
+        err.message
+      );
+    }
+
+    activeSessions.delete(phone);
+
+    const rows =
+      await readAccountsFromSheet();
+
+    for (let i = 0; i < rows.length; i++) {
+      const rowNumber = i + 2;
+      const account = rows[i][2] || "";
+
+      const sheetPhone = String(account)
+        .replace(/[^\d]/g, "");
+
+      if (sheetPhone === phone) {
+        await clearWhatsAppSheetRow(
+          rowNumber
+        );
+      }
+    }
+
+    await bot.sendMessage(
+      chatId,
+      `✅ WhatsApp удалён: ${phone}`
+    );
+
+    return;
   }
 
-  const { data: usedAccounts } = await supabase
-    .from("wa_accounts")
-    .select("proxy_id")
-    .not("proxy_id", "is", null);
+  // Telegram
+  const username = raw
+    .replace("@", "")
+    .trim()
+    .toLowerCase();
 
-  const usedProxyIds = new Set(
-    (usedAccounts || []).map(acc => acc.proxy_id)
-  );
+  if (!username) {
+    await bot.sendMessage(
+      chatId,
+      "❌ Неверный Telegram username."
+    );
 
-  const freeProxy =
-    proxies.find(proxy => !usedProxyIds.has(proxy.id)) || proxies[0];
+    return;
+  }
+
+  const { data: tgUsers } =
+    await supabase
+      .from("tg_group_users")
+      .select("*")
+      .or(
+        `username.ilike.${username},username.ilike.@${username}`
+      );
+
+  if (tgUsers && tgUsers.length) {
+    for (const tgUser of tgUsers) {
+      try {
+        await bot.banChatMember(
+          tgUser.chat_id,
+          tgUser.user_id,
+          {
+            revoke_messages: true
+          }
+        );
+
+        setTimeout(async () => {
+          try {
+            await bot.unbanChatMember(
+              tgUser.chat_id,
+              tgUser.user_id,
+              {
+                only_if_banned: true
+              }
+            );
+          } catch (err) {
+            console.log(
+              "TG unban error:",
+              err.message
+            );
+          }
+        }, 3000);
+
+      } catch (err) {
+        console.log(
+          "TG kick error:",
+          err.message
+        );
+      }
+    }
+  }
 
   await supabase
-    .from("wa_accounts")
-    .update({ proxy_id: freeProxy.id })
-    .eq("phone", phone);
-
-  return freeProxy;
-}
-
-async function startWhatsApp(phone, chatId) {
-  if (activeSessions.has(phone)) {
-    await bot.sendMessage(chatId, `⚠️ WhatsApp ${phone} уже запущен`);
-    return;
-  }
-
-  activeSessions.set(phone, true);
-
-  await restoreSessionFromStorage(phone);
-
-  const sessionPath = `./sessions/wa_${phone}`;
-
-  const { state, saveCreds } =
-    await useMultiFileAuthState(sessionPath);
-
-  const proxy = await getProxyForPhone(phone);
-
-  let agent = undefined;
-
-  if (proxy) {
-    const auth =
-      proxy.username && proxy.password
-        ? `${proxy.username}:${proxy.password}@`
-        : "";
-
-    const proxyUrl =
-      `${proxy.type}://${auth}${proxy.host}:${proxy.port}`;
-
-    agent = new SocksProxyAgent(proxyUrl);
-
-    console.log(
-      `Using proxy for ${phone}: ${proxy.host}:${proxy.port}`
+    .from("tg_group_users")
+    .delete()
+    .or(
+      `username.ilike.${username},username.ilike.@${username}`
     );
-  } else {
+
+  try {
+    await supabase
+      .from("tg_group_users")
+      .delete()
+      .eq("user_id", username);
+  } catch (err) {
     console.log(
-      `No proxy for ${phone}, using server IP`
+      "TG delete by user_id error:",
+      err.message
     );
   }
 
-  const sock = makeWASocket({
-    auth: state,
-    logger: P({ level: "silent" }),
-    printQRInTerminal: false,
-    agent,
-    fetchAgent: agent
-  });
+  const tgRows =
+    await readTelegramFromSheet();
 
-  sock.ev.on("creds.update", async () => {
-    await saveCreds();
-    scheduleSessionUpload(phone);
-  });
+  for (let i = 0; i < tgRows.length; i++) {
+    const rowNumber = i + 3;
+    const account =
+      tgRows[i][2] || "";
 
-  sock.ev.on("connection.update", async (update) => {
-    const {
-      connection,
-      qr,
-      lastDisconnect
-    } = update;
+    const sheetUsername = String(account)
+      .replace("@", "")
+      .trim()
+      .toLowerCase();
 
-    if (qr) {
-      console.log(`QR for ${phone}`);
-
-      await saveStatus(phone, "need_qr");
-
-      const qrBuffer = await QRCode.toBuffer(qr, {
-        type: "png",
-        width: 500
-      });
-
-      await bot.sendPhoto(
-        chatId,
-        qrBuffer,
-        {
-          caption: `📲 Отсканируй QR для WhatsApp ${phone}`
-        }
+    if (sheetUsername === username) {
+      await clearTelegramSheetRow(
+        rowNumber
       );
     }
-
-    if (connection === "open") {
-      console.log(`WhatsApp ${phone} connected`);
-
-      await saveStatus(phone, "connected");
-      await uploadSessionToStorage(phone);
-
-      await bot.sendMessage(
-        chatId,
-        `✅ WhatsApp ${phone} подключен`
-      );
-    }
-
-    if (connection === "close") {
-      const code =
-        lastDisconnect?.error?.output?.statusCode;
-
-      console.log(
-        `WhatsApp ${phone} disconnected`,
-        code
-      );
-
-      activeSessions.delete(phone);
-
-      if (code === DisconnectReason.loggedOut) {
-        await saveStatus(
-          phone,
-          "logged_out",
-          "Need new QR"
-        );
-
-        await bot.sendMessage(
-          chatId,
-          `⛔ WhatsApp ${phone} разлогинен`
-        );
-
-        return;
-      }
-
-      await saveStatus(
-        phone,
-        "disconnected",
-        `Disconnect code: ${code}`
-      );
-
-      await bot.sendMessage(
-        chatId,
-        `⚠️ WhatsApp ${phone} отключился`
-      );
-
-      setTimeout(() => {
-        startWhatsApp(phone, chatId);
-      }, 10000);
-    }
-  });
-}
-
-bot.onText(/\/start/, async (msg) => {
-  if (String(msg.from.id) !== ADMIN_ID) return;
+  }
 
   await bot.sendMessage(
-    msg.chat.id,
-    `👋 WA Checker готов`,
-    {
-      reply_markup: {
-        keyboard: [
-          ["➕ Добавить WhatsApp"],
-          ["➕ Добавить Telegram"],
-          ["📊 Статус"]
-        ],
-        resize_keyboard: true
-      }
-    }
+    chatId,
+    `✅ Telegram удалён: @${username}`
   );
-});
+}
 
-bot.onText(/\/status/, async (msg) => {
-  if (String(msg.from.id) !== ADMIN_ID) {
-    return;
-  }
+async function checkTelegramDeletedUsers() {
+  console.log("TG checker triggered");
 
-  const { data, error } =
-    await supabase
-      .from("wa_accounts")
-      .select("*")
-      .order("created_at", {
-        ascending: false
-      });
+  const { data: users, error } = await supabase
+    .from("tg_group_users")
+    .select("*")
+    .eq("is_bot", false)
+    .eq("is_deleted", false);
 
   if (error) {
-    await bot.sendMessage(
-      msg.chat.id,
-      `❌ Ошибка Supabase`
-    );
-
+    console.log("TG checker Supabase error:", error.message);
     return;
   }
 
-  if (!data || !data.length) {
-    await bot.sendMessage(
-      msg.chat.id,
-      `Нет WhatsApp`
-    );
-
+  if (!users || !users.length) {
+    console.log("TG checker: no users to check");
     return;
   }
 
-  const text = data.map(acc => {
-    let icon = "⚪";
+  console.log(`TG checker started. Users: ${users.length}`);
 
-    if (acc.status === "connected") icon = "🟢";
-    if (acc.status === "need_qr") icon = "📲";
-    if (acc.status === "logged_out") icon = "⛔";
-    if (acc.status === "disconnected") icon = "🔴";
-    if (acc.status === "starting") icon = "⏳";
+  let deleted = [];
 
-    return `${icon} ${acc.phone} — ${acc.status}`;
-  }).join("\n");
+  for (const row of users) {
+    console.log(`Checking TG user ${row.user_id}`);
 
-  await bot.sendMessage(
-    msg.chat.id,
-    `📊 WA Status
-
-${text}`
-  );
-});
-
-async function autoLoadSessions() {
-  const { data, error } =
-    await supabase
-      .from("wa_accounts")
-      .select("*");
-
-  if (error) {
-    console.log("Auto load error", error);
-    return;
-  }
-
-  if (!data || !data.length) {
-    console.log("No sessions to autoload");
-    return;
-  }
-
-  console.log(`Autoloading ${data.length} sessions`);
-
-  for (const acc of data) {
     try {
-      console.log(`Starting ${acc.phone}`);
+      const member = await bot.getChatMember(row.chat_id, row.user_id);
+      const user = member.user;
 
-      startWhatsApp(
-        acc.phone,
-        REPORT_CHAT_ID
-      );
+      const isDeleted =
+        user.first_name === "Deleted Account" ||
+        user.first_name === "Удалённый аккаунт" ||
+        !user.first_name;
 
-      await new Promise(resolve =>
-        setTimeout(resolve, 5000)
-      );
+      await supabase
+        .from("tg_group_users")
+        .update({
+          username: user.username || null,
+          first_name: user.first_name || null,
+          last_name: user.last_name || null,
+          is_deleted: isDeleted,
+          member_status: member.status,
+          last_checked_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", row.id);
+
+      if (isDeleted || member.status === "left" || member.status === "kicked") {
+        deleted.push({
+          user_id: row.user_id,
+          username: user.username || row.username,
+          first_name: user.first_name || row.first_name,
+          status: member.status
+        });
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 700));
 
     } catch (e) {
-      console.log(
-        `Autoload failed ${acc.phone}`,
-        e
-      );
+      console.log(`TG check error ${row.user_id}:`, e.message);
+
+      await supabase
+        .from("tg_group_users")
+        .update({
+          member_status: "check_error",
+          last_error: e.message,
+          last_checked_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", row.id);
     }
+  }
+
+  if (deleted.length) {
+    console.log(`Deleted users found: ${deleted.length}`);
+
+    const text = deleted.map(u => {
+      const name = u.username ? `@${u.username}` : u.first_name || "без username";
+      return `⛔ ${name} | ID: ${u.user_id} | ${u.status}`;
+    }).join("\n");
+
+    await bot.sendMessage(
+      REPORT_CHAT_ID,
+      `🚨 Telegram deleted/left accounts
+
+${text}`
+    );
+  } else {
+    console.log("TG checker finished. No deleted users.");
   }
 }
 
+function esc(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function sendHourlyReport() {
+  console.log("Hourly WA/TG report started");
+
+  const { data: waAccounts } = await supabase
+    .from("wa_accounts")
+    .select("*");
+
+  const { data: tgUsers } = await supabase
+    .from("tg_group_users")
+    .select("*")
+    .eq("is_bot", false);
+
+  const waList = waAccounts || [];
+  const tgList = tgUsers || [];
+
+  const badWa = waList.filter(acc =>
+    acc.status === "logged_out" ||
+    acc.status === "need_qr"
+  );
+
+  const badTg = tgList.filter(user =>
+    user.is_deleted === true ||
+    user.member_status === "left" ||
+    user.member_status === "kicked" ||
+    user.member_status === "check_error"
+  );
+
+  const badWaText = badWa.length
+    ? badWa.map(acc =>
+        `• <code>${esc(acc.phone)}</code> — <b>${esc(acc.status)}</b>`
+      ).join("\n")
+    : "<i>Нет проблем</i>";
+
+  const badTgText = badTg.length
+    ? badTg.map(user => {
+        const name = user.username
+          ? `@${esc(user.username)}`
+          : esc(user.first_name || "без username");
+
+        return `• ${name} | ID: <code>${esc(user.user_id)}</code> — <b>${esc(user.member_status || "deleted")}</b>`;
+      }).join("\n")
+    : "<i>Нет проблем</i>";
+
+  const report = `
+<b>📊 WA/TG ОТЧЁТ</b>
+
+<b>🟢 WhatsApp</b>
+Проверено: <b>${waList.length}</b>
+Проблемы: <b>${badWa.length}</b>
+
+<b>⛔ Проблемные WhatsApp:</b>
+${badWaText}
+
+<b>👥 Telegram</b>
+Проверено: <b>${tgList.length}</b>
+Проблемы: <b>${badTg.length}</b>
+
+<b>⛔ Проблемные Telegram:</b>
+${badTgText}
+
+<i>🕒 ${new Date().toLocaleString()}</i>
+`;
+
+  await bot.sendMessage(REPORT_CHAT_ID, report, {
+    parse_mode: "HTML"
+  });
+
+  console.log("Hourly WA/TG report sent");
+}
+
+autoLoadSessions({
+  supabase,
+  REPORT_CHAT_ID,
+  startWhatsApp,
+  bot,
+  SESSION_SECRET,
+  SESSION_BUCKET,
+  activeSessions,
+  scheduleSessionUpload,
+  saveStatus,
+  markSheetBanAndReport,
+  WORKER_ID: process.env.WORKER_ID || "worker_1"
+});
+
+setInterval(() => {
+  checkTelegramDeletedUsers();
+}, 60 * 60 * 1000);
+
 setTimeout(() => {
-  autoLoadSessions();
-}, 5000);
+  checkTelegramDeletedUsers();
+}, 15000);
+
+setInterval(() => {
+  sendHourlyReport();
+}, 60 * 60 * 1000);
+
+setTimeout(() => {
+  sendHourlyReport();
+}, 20000);
