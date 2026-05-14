@@ -11,7 +11,6 @@ function registerTelegramHandlers({
   getWaSheetIntervalMs,
   setWaSheetIntervalMs,
   startWaSheetAutoImportInterval,
-
   appendSheetRow,
   readAccountsFromSheet,
   updateSheetRow,
@@ -20,7 +19,10 @@ function registerTelegramHandlers({
   markSheetBanAndReport,
   tgUsers
 }) {
+  console.log("Telegram handlers registered");
   bot.onText(/\/start(?: (.+))?/, async (msg, match) => {
+    console.log("START received", msg.from.id);
+    
     const startPayload =
       match && match[1]
         ? match[1].trim()
