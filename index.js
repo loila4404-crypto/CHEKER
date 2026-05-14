@@ -72,7 +72,7 @@ const supabase = createClient(
 );
 
 const bot = new TelegramBot(BOT_TOKEN, {
-  ppolling: BOT_MODE === "main"
+  polling: BOT_MODE === "main"
 });
 
 const app = express();
