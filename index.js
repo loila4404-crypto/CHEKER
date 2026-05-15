@@ -43,7 +43,8 @@ const {
 
 const {
   saveStatus,
-  syncWhatsAppSheetWithSupabase
+  syncWhatsAppSheetWithSupabase,
+  syncTelegramSheetWithSupabase
 } = require("./services/waAccounts");
 
 const {
@@ -179,7 +180,10 @@ setInterval(async () => {
     await syncWhatsAppSheetWithSupabase({
       supabase
     });
-
+    await syncTelegramSheetWithSupabase({
+      supabase
+    });
+    
     console.log("WA sheet sync by timer finished");
   } catch (err) {
     console.log(
