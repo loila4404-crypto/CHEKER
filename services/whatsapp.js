@@ -12,13 +12,16 @@ const {
 } = require("socks-proxy-agent");
 
 const {
-  restoreSessionFromStorage,
-  uploadSessionToStorage
+  restoreSessionFromStorage
 } = require("./storage");
 
 const {
   getProxyForPhone
 } = require("./proxy");
+
+function isReportChat(chatId) {
+  return String(chatId) === String(process.env.REPORT_CHAT_ID);
+}
 
 async function startWhatsApp({
   phone,
@@ -120,32 +123,40 @@ async function startWhatsApp({
         });
 
         try {
-          const qrBuffer =
-            await QRCode.toBuffer(qr);
+          if (!isReportChat(chatId)) {
+            const qrBuffer =
+              await QRCode.toBuffer(qr);
 
-          await bot.sendPhoto(
-            chatId,
-            qrBuffer,
-            {
-              caption: `📲 QR для WhatsApp ${phone}`
-            }
-          );
+            await bot.sendPhoto(
+              chatId,
+              qrBuffer,
+              {
+                caption: `📲 QR для WhatsApp ${phone}`
+              }
+            );
 
-          console.log(
-            `WA QR sent: ${phone}`
-          );
+            console.log(
+              `WA QR sent: ${phone}`
+            );
+          } else {
+            console.log(
+              `WA ${phone} requires QR, report chat ignored`
+            );
+          }
         } catch (err) {
           console.log(
             `QR send error ${phone}:`,
             err.message
           );
 
-          try {
-            await bot.sendMessage(
-              chatId,
-              `❌ Не смог отправить QR для ${phone}: ${err.message}`
-            );
-          } catch (_) {}
+          if (!isReportChat(chatId)) {
+            try {
+              await bot.sendMessage(
+                chatId,
+                `❌ Не смог отправить QR для ${phone}: ${err.message}`
+              );
+            } catch (_) {}
+          }
         }
       }
 
@@ -155,18 +166,6 @@ async function startWhatsApp({
           status: "connected",
           supabase
         });
-
-        await uploadSessionToStorage({
-          phone,
-          supabase,
-          sessionSecret: SESSION_SECRET,
-          bucket: SESSION_BUCKET
-        });
-
-        await bot.sendMessage(
-          chatId,
-          `✅ WhatsApp ${phone} подключен`
-        ).catch(() => {});
 
         console.log(
           `WA ${phone} connected`
@@ -202,9 +201,7 @@ async function startWhatsApp({
           if (typeof markSheetBanAndReport === "function") {
             await markSheetBanAndReport({
               phone,
-              reason: "Разлогинен",
-              bot,
-              reportChatId: process.env.REPORT_CHAT_ID
+              reason: "Разлогинен"
             });
           }
 
@@ -243,12 +240,14 @@ async function startWhatsApp({
 
     activeSessions.delete(phone);
 
-    try {
-      await bot.sendMessage(
-        chatId,
-        `❌ Ошибка запуска WhatsApp ${phone}: ${err.message}`
-      );
-    } catch (_) {}
+    if (!isReportChat(chatId)) {
+      try {
+        await bot.sendMessage(
+          chatId,
+          `❌ Ошибка запуска WhatsApp ${phone}: ${err.message}`
+        );
+      } catch (_) {}
+    }
   }
 }
 
