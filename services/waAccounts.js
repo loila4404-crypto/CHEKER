@@ -22,9 +22,9 @@ async function saveStatus({
       onConflict: "phone"
     });
 
-  await syncWhatsAppSheetWithSupabase({
-    supabase
-  });
+  console.log(
+    `WA status saved only to Supabase: ${phone} -> ${status}`
+  );
 }
 
 async function syncWhatsAppSheetWithSupabase({
@@ -32,7 +32,6 @@ async function syncWhatsAppSheetWithSupabase({
 }) {
   try {
     const rows = await readAccountsFromSheet();
-    console.log("SHEET ROWS:", rows);
 
     const { data: waAccounts, error } = await supabase
       .from("wa_accounts")
@@ -67,10 +66,7 @@ async function syncWhatsAppSheetWithSupabase({
         .filter(phone => phone.length >= 8)
     );
 
-    console.log(
-      "CONNECTED PHONES:",
-      [...connectedPhones]
-    );
+    let updated = 0;
 
     for (let i = 0; i < rows.length; i++) {
       const rowNumber = i + 3;
@@ -89,22 +85,20 @@ async function syncWhatsAppSheetWithSupabase({
       const sheetPhone = String(account || "")
         .replace(/[^\d]/g, "");
 
-      console.log(
-        "CHECKING ROW:",
-        {
-          rowNumber,
-          sheetType,
-          sheetPhone,
-          sheetStatus
-        }
-      );
-
       if (sheetType !== "whatsapp") continue;
       if (!sheetPhone || sheetPhone.length < 8) continue;
 
       const newStatus = connectedPhones.has(sheetPhone)
         ? "ACTIVE"
         : "CONNECTION";
+
+      if (
+        String(sheetStatus || "")
+          .trim()
+          .toUpperCase() === newStatus
+      ) {
+        continue;
+      }
 
       await updateSheetRow(rowNumber, [
         id,
@@ -115,10 +109,16 @@ async function syncWhatsAppSheetWithSupabase({
         operator
       ]);
 
+      updated++;
+
       console.log(
-        `WA sheet force synced: ${sheetPhone} -> ${newStatus}`
+        `WA sheet synced: ${sheetPhone} -> ${newStatus}`
       );
     }
+
+    console.log(
+      `WA sheet sync finished. Updated rows: ${updated}`
+    );
   } catch (err) {
     console.log(
       "WA sheet sync error:",
