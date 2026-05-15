@@ -27,10 +27,41 @@ async function saveStatus({
   );
 }
 
+function normalizePhone(value) {
+  return String(value || "")
+    .replace(/[^\d]/g, "");
+}
+
+function normalizeStatus(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase();
+}
+
+function getSheetStatusByWaStatus(status) {
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    [
+      "connected",
+      "active",
+      "open"
+    ].includes(normalized)
+  ) {
+    return "ACTIVE";
+  }
+
+  return "CONNECTION";
+}
+
 async function syncWhatsAppSheetWithSupabase({
   supabase
 }) {
   try {
+    console.log("WA sheet sync started");
+
     const rows = await readAccountsFromSheet();
 
     const { data: waAccounts, error } = await supabase
@@ -46,27 +77,21 @@ async function syncWhatsAppSheetWithSupabase({
       return;
     }
 
-    const connectedPhones = new Set(
-      (waAccounts || [])
-        .filter(acc => {
-          const status = String(acc.status || "")
-            .trim()
-            .toLowerCase();
+    const statusByPhone = new Map();
 
-          return [
-            "connected",
-            "active",
-            "open"
-          ].includes(status);
-        })
-        .map(acc =>
-          String(acc.phone || "")
-            .replace(/[^\d]/g, "")
-        )
-        .filter(phone => phone.length >= 8)
-    );
+    for (const acc of waAccounts || []) {
+      const phone = normalizePhone(acc.phone);
+
+      if (!phone || phone.length < 8) continue;
+
+      statusByPhone.set(
+        phone,
+        getSheetStatusByWaStatus(acc.status)
+      );
+    }
 
     let updated = 0;
+    let checked = 0;
 
     for (let i = 0; i < rows.length; i++) {
       const rowNumber = i + 3;
@@ -82,21 +107,17 @@ async function syncWhatsAppSheetWithSupabase({
         .trim()
         .toLowerCase();
 
-      const sheetPhone = String(account || "")
-        .replace(/[^\d]/g, "");
+      const sheetPhone = normalizePhone(account);
 
       if (sheetType !== "whatsapp") continue;
       if (!sheetPhone || sheetPhone.length < 8) continue;
 
-      const newStatus = connectedPhones.has(sheetPhone)
-        ? "ACTIVE"
-        : "CONNECTION";
+      checked++;
 
-      if (
-        String(sheetStatus || "")
-          .trim()
-          .toUpperCase() === newStatus
-      ) {
+      const newStatus =
+        statusByPhone.get(sheetPhone) || "CONNECTION";
+
+      if (normalizeStatus(sheetStatus) === newStatus) {
         continue;
       }
 
@@ -112,12 +133,12 @@ async function syncWhatsAppSheetWithSupabase({
       updated++;
 
       console.log(
-        `WA sheet synced: ${sheetPhone} -> ${newStatus}`
+        `WA sheet synced: row ${rowNumber}, ${sheetPhone} -> ${newStatus}`
       );
     }
 
     console.log(
-      `WA sheet sync finished. Updated rows: ${updated}`
+      `WA sheet sync finished. Checked: ${checked}. Updated: ${updated}`
     );
   } catch (err) {
     console.log(
