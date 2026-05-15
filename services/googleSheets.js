@@ -28,7 +28,7 @@ async function getSheetsClient() {
 async function readAccountsFromSheet() {
   const sheets = await getSheetsClient();
 
-  const range = `${process.env.GOOGLE_SHEET_NAME}!A2:F`;
+  const range = `${process.env.GOOGLE_SHEET_NAME}!A3:F1000`;
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
@@ -72,7 +72,7 @@ async function appendSheetRow(values) {
 async function readTelegramFromSheet() {
   const sheets = await getSheetsClient();
 
-  const range = `${process.env.GOOGLE_SHEET_NAME}!H3:M`;
+  const range = `${process.env.GOOGLE_SHEET_NAME}!H3:M1000`;
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
@@ -100,18 +100,44 @@ async function updateTelegramSheetRow(rowNumber, values) {
 async function clearWhatsAppSheetRow(rowNumber) {
   const sheets = await getSheetsClient();
 
-  await sheets.spreadsheets.values.clear({
+  const range = `${process.env.GOOGLE_SHEET_NAME}!A${rowNumber}:F${rowNumber}`;
+
+  await sheets.spreadsheets.values.update({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `${process.env.GOOGLE_SHEET_NAME}!A${rowNumber}:F${rowNumber}`
+    range,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        "",
+        "WhatsApp",
+        "",
+        "",
+        "",
+        ""
+      ]]
+    }
   });
 }
 
 async function clearTelegramSheetRow(rowNumber) {
   const sheets = await getSheetsClient();
 
-  await sheets.spreadsheets.values.clear({
+  const range = `${process.env.GOOGLE_SHEET_NAME}!H${rowNumber}:M${rowNumber}`;
+
+  await sheets.spreadsheets.values.update({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `${process.env.GOOGLE_SHEET_NAME}!H${rowNumber}:M${rowNumber}`
+    range,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        "",
+        "Telegramm",
+        "",
+        "",
+        "",
+        ""
+      ]]
+    }
   });
 }
 
