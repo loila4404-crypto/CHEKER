@@ -120,18 +120,24 @@ async function startWhatsApp({
           const qrBuffer =
             await QRCode.toBuffer(qr);
 
-          await bot.sendPhoto(
-            chatId,
-            qrBuffer,
-            {
-              caption:
-                `📲 QR для WhatsApp ${phone}`
-            }
-          );
+          if (String(chatId) !== String(process.env.REPORT_CHAT_ID)) {
+            await bot.sendPhoto(
+              chatId,
+              qrBuffer,
+              {
+                caption:
+                  `📲 QR для WhatsApp ${phone}`
+              }
+            );
 
-          console.log(
-            `WA QR sent: ${phone}`
-          );
+            console.log(
+              `WA QR sent to admin: ${phone}`
+            );
+          } else {
+            console.log(
+              `WA ${phone} требует QR, в канал отчёта не отправляем`
+            );
+          }
         } catch (err) {
           console.log(
             `QR send error ${phone}:`,
