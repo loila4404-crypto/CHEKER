@@ -1,4 +1,5 @@
 const P = require("pino");
+const QRCode = require("qrcode");
 
 const {
   default: makeWASocket,
@@ -115,9 +116,28 @@ async function startWhatsApp({
           supabase
         });
 
-        console.log(
-          `WA ${phone} требует QR, в канал не отправляем`
-        );
+        try {
+          const qrBuffer =
+            await QRCode.toBuffer(qr);
+
+          await bot.sendPhoto(
+            chatId,
+            qrBuffer,
+            {
+              caption:
+                `📲 QR для WhatsApp ${phone}`
+            }
+          );
+
+          console.log(
+            `WA QR sent: ${phone}`
+          );
+        } catch (err) {
+          console.log(
+            `QR send error ${phone}:`,
+            err.message
+          );
+        }
       }
 
       if (connection === "open") {
