@@ -42,7 +42,8 @@ const {
 } = require("./services/whatsapp");
 
 const {
-  saveStatus
+  saveStatus,
+  syncWhatsAppSheetWithSupabase
 } = require("./services/waAccounts");
 
 const {
@@ -79,8 +80,10 @@ const app = express();
 
 const waitingForWhatsApp = new Set();
 const waitingForDelete = new Set();
+const waitingForTelegramAdd = new Set();
 const clientWaState = new Map();
 const activeSessions = new Map();
+const deletingWaPhones = new Set();
 const saveTimers = new Map();
 const tgUsers = new Set();
 
@@ -88,6 +91,53 @@ let waSheetIntervalMs = 30 * 60 * 1000;
 let waSheetIntervalTimer = null;
 
 registerHealthRoutes(app);
+
+bot.on("message", async (msg) => {
+  try {
+    if (!msg.chat || !msg.from) return;
+
+    if (
+      msg.chat.type !== "group" &&
+      msg.chat.type !== "supergroup"
+    ) {
+      return;
+    }
+
+    console.log(
+      "CHECKER GROUP ID:",
+      msg.chat.id
+    );
+
+    await supabase
+      .from("tg_group_users")
+      .upsert({
+        chat_id: String(msg.chat.id),
+        user_id: String(msg.from.id),
+        username: msg.from.username || null,
+        first_name: msg.from.first_name || null,
+        last_name: msg.from.last_name || null,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: "chat_id,user_id"
+      });
+
+    await supabase
+      .from("tg_groups")
+      .upsert({
+        chat_id: String(msg.chat.id),
+        title: msg.chat.title || null,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: "chat_id"
+      });
+
+  } catch (err) {
+    console.log(
+      "Group tracker error:",
+      err.message
+    );
+  }
+});
 
 if (BOT_MODE === "main") {
   registerTelegramHandlers({
@@ -97,9 +147,12 @@ if (BOT_MODE === "main") {
     ADMIN_ID,
     clientWaState,
     waitingForDelete,
+    waitingForTelegramAdd,
     deleteAccountFromSystem,
+    syncWhatsAppSheetWithSupabase,
     markTelegramActiveByUsername,
     makeToken,
+    getAccountsStatusText,
     getWaSheetIntervalMs: () => waSheetIntervalMs,
     setWaSheetIntervalMs: (value) => {
       waSheetIntervalMs = value;
@@ -110,6 +163,10 @@ if (BOT_MODE === "main") {
     updateSheetRow,
     readTelegramFromSheet,
     updateTelegramSheetRow,
+    startWhatsApp,
+    activeSessions,
+    scheduleSessionUpload,
+    saveStatus,
     markSheetBanAndReport,
     tgUsers
   });
@@ -212,8 +269,12 @@ async function autoImportWhatsAppFromSheet() {
       const adName = rows[i][4] || "";
       const operator = rows[i][5] || "";
 
+      const sheetStatus = String(status)
+        .trim()
+        .toUpperCase();
+
       if (type !== "WhatsApp") continue;
-      if (status !== "CONNECTION") continue;
+      if (!["CONNECTION", "CONNECTED"].includes(sheetStatus)) continue;
       if (!account) continue;
 
       const phone = String(account).replace(/[^\d]/g, "");
@@ -227,6 +288,18 @@ async function autoImportWhatsAppFromSheet() {
         .single();
 
       if (!existing) continue;
+
+      const existingStatus = String(existing.status || "")
+        .trim()
+        .toLowerCase();
+
+      if (
+        existingStatus !== "connected" &&
+        existingStatus !== "active" &&
+        existingStatus !== "open"
+      ) {
+        continue;
+      }
 
       await updateSheetRow(rowNumber, [
         existing.id || id,
@@ -326,7 +399,7 @@ async function markTelegramActiveByUsername(username) {
       await updateTelegramSheetRow(
         rowNumber,
         [
-          tgUser.user_id || id,
+          id,
           "Telegramm",
           account,
           "ACTIVE",
@@ -349,6 +422,100 @@ async function markTelegramActiveByUsername(username) {
   }
 }
 
+async function getAccountsStatusText() {
+  console.log("STATUS BUTTON CLICKED");
+  console.log("SYNC FUNCTION TYPE:", typeof syncWhatsAppSheetWithSupabase);
+
+  await syncWhatsAppSheetWithSupabase({
+    supabase
+  });
+
+  console.log("SYNC FINISHED");
+
+  const waRows = await readAccountsFromSheet();
+  const tgRows = await readTelegramFromSheet();
+
+  const waSheetAccounts = waRows
+    .map(row =>
+      String(row[2] || "")
+        .replace(/[^\d]/g, "")
+    )
+    .filter(phone => phone.length >= 8);
+
+  const tgSheetAccounts = tgRows
+    .map(row =>
+      String(row[2] || "")
+        .replace("@", "")
+        .trim()
+        .toLowerCase()
+    )
+    .filter(Boolean);
+
+  console.log("WA SHEET ACCOUNTS:", waSheetAccounts);
+
+  const { data: waAccounts } = await supabase
+    .from("wa_accounts")
+    .select("phone,status");
+
+  const { data: tgUsers } = await supabase
+    .from("tg_group_users")
+    .select("username,is_bot");
+
+  console.log("WA SUPABASE ACCOUNTS:", waAccounts);
+
+  const connectedStatuses = [
+    "connected",
+    "active",
+    "open"
+  ];
+
+  const waConnected = (waAccounts || [])
+    .filter(acc => {
+      const accPhone = String(acc.phone || "")
+        .replace(/[^\d]/g, "");
+
+      const accStatus = String(acc.status || "")
+        .trim()
+        .toLowerCase();
+
+      return (
+        waSheetAccounts.includes(accPhone) &&
+        connectedStatuses.includes(accStatus)
+      );
+    }).length;
+
+  const tgConnected = (tgUsers || [])
+    .filter(user => {
+      if (user.is_bot === true) {
+        return false;
+      }
+
+      const username = String(user.username || "")
+        .replace("@", "")
+        .trim()
+        .toLowerCase();
+
+      return tgSheetAccounts.includes(username);
+    }).length;
+
+  const waTotal = waSheetAccounts.length;
+  const tgTotal = tgSheetAccounts.length;
+
+  return `
+📊 <b>СТАТУС АККАУНТОВ</b>
+
+🟢 <b>WhatsApp</b>
+В таблице: <b>${waTotal}</b>
+Подключено: <b>${waConnected}</b>
+Не подключено: <b>${Math.max(waTotal - waConnected, 0)}</b>
+
+🔵 <b>Telegram</b>
+В таблице: <b>${tgTotal}</b>
+Подключено: <b>${tgConnected}</b>
+Не подключено: <b>${Math.max(tgTotal - tgConnected, 0)}</b>
+`;
+}
+
 async function deleteAccountFromSystem(input, chatId) {
   const raw = String(input || "").trim();
 
@@ -367,6 +534,37 @@ async function deleteAccountFromSystem(input, chatId) {
   // WhatsApp
   if (isPhone) {
     const phone = onlyDigits;
+deletingWaPhones.add(phone);
+    try {
+      const waSession =
+        activeSessions.get(phone);
+
+      if (
+        waSession &&
+        typeof waSession.logout === "function"
+      ) {
+        await waSession.logout();
+      }
+
+      if (
+        waSession &&
+        typeof waSession.end === "function"
+      ) {
+        waSession.end();
+      }
+    } catch (err) {
+      console.log(
+        "WA logout error:",
+        err.message
+      );
+    }
+
+    activeSessions.delete(phone);
+
+    if (saveTimers.has(phone)) {
+      clearTimeout(saveTimers.get(phone));
+      saveTimers.delete(phone);
+    }
 
     await supabase
       .from("wa_accounts")
@@ -386,28 +584,65 @@ async function deleteAccountFromSystem(input, chatId) {
       );
     }
 
-    activeSessions.delete(phone);
+    try {
+      const sessionDir = path.join(
+        __dirname,
+        "sessions",
+        `wa_${phone}`
+      );
+
+      await fsp.rm(sessionDir, {
+        recursive: true,
+        force: true
+      });
+    } catch (err) {
+      console.log(
+        "Local WA session remove error:",
+        err.message
+      );
+    }
 
     const rows =
       await readAccountsFromSheet();
 
+    let cleared = false;
+
     for (let i = 0; i < rows.length; i++) {
-      const rowNumber = i + 2;
+      const rowNumber = i + 3;
+
       const account = rows[i][2] || "";
 
       const sheetPhone = String(account)
         .replace(/[^\d]/g, "");
 
       if (sheetPhone === phone) {
-        await clearWhatsAppSheetRow(
-          rowNumber
+        await updateSheetRow(rowNumber, [
+          "",
+          "WhatsApp",
+          "",
+          "",
+          "",
+          ""
+        ]);
+
+        console.log(
+          `WA sheet row cleared: ${rowNumber}`
         );
+
+        cleared = true;
+        break;
       }
+    }
+
+    if (!cleared) {
+      console.log(
+        `WA sheet row not found for delete: ${phone}`
+      );
     }
 
     await bot.sendMessage(
       chatId,
-      `✅ WhatsApp удалён: ${phone}`
+      `✅ WhatsApp полностью удалён и разлогинен: ${phone}`
     );
 
     return;
@@ -506,9 +741,20 @@ async function deleteAccountFromSystem(input, chatId) {
       .toLowerCase();
 
     if (sheetUsername === username) {
-      await clearTelegramSheetRow(
-        rowNumber
+      await updateTelegramSheetRow(rowNumber, [
+        "",
+        "Telegramm",
+        "",
+        "",
+        "",
+        ""
+      ]);
+
+      console.log(
+        `TG sheet row cleared: ${rowNumber}`
       );
+
+      break;
     }
   }
 
@@ -525,7 +771,7 @@ async function checkTelegramDeletedUsers() {
     .from("tg_group_users")
     .select("*")
     .eq("is_bot", false)
-    .eq("is_deleted", false);
+    .neq("is_deleted", true);
 
   if (error) {
     console.log("TG checker Supabase error:", error.message);
@@ -553,21 +799,29 @@ async function checkTelegramDeletedUsers() {
         user.first_name === "Удалённый аккаунт" ||
         !user.first_name;
 
+      const isLeftOrKicked =
+        member.status === "left" ||
+        member.status === "kicked";
+
+      const finalDeleted =
+        isDeleted || isLeftOrKicked;
+
       await supabase
         .from("tg_group_users")
         .update({
           username: user.username || null,
           first_name: user.first_name || null,
           last_name: user.last_name || null,
-          is_deleted: isDeleted,
+          is_deleted: finalDeleted,
           member_status: member.status,
           last_checked_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         })
         .eq("id", row.id);
 
-      if (isDeleted || member.status === "left" || member.status === "kicked") {
+      if (finalDeleted) {
         deleted.push({
+          id: row.id,
           user_id: row.user_id,
           username: user.username || row.username,
           first_name: user.first_name || row.first_name,
@@ -596,7 +850,11 @@ async function checkTelegramDeletedUsers() {
     console.log(`Deleted users found: ${deleted.length}`);
 
     const text = deleted.map(u => {
-      const name = u.username ? `@${u.username}` : u.first_name || "без username";
+      const name =
+        u.username
+          ? `@${u.username}`
+          : u.first_name || "без username";
+
       return `⛔ ${name} | ID: ${u.user_id} | ${u.status}`;
     }).join("\n");
 
@@ -606,6 +864,17 @@ async function checkTelegramDeletedUsers() {
 
 ${text}`
     );
+
+    for (const u of deleted) {
+      await supabase
+        .from("tg_group_users")
+        .update({
+          is_deleted: true,
+          member_status: u.status,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", u.id);
+    }
   } else {
     console.log("TG checker finished. No deleted users.");
   }
@@ -639,10 +908,12 @@ async function sendHourlyReport() {
   );
 
   const badTg = tgList.filter(user =>
-    user.is_deleted === true ||
-    user.member_status === "left" ||
-    user.member_status === "kicked" ||
-    user.member_status === "check_error"
+    (
+      user.member_status === "left" ||
+      user.member_status === "kicked" ||
+      user.member_status === "check_error"
+    ) &&
+    user.is_deleted !== true
   );
 
   const badWaText = badWa.length
@@ -681,9 +952,25 @@ ${badTgText}
 <i>🕒 ${new Date().toLocaleString()}</i>
 `;
 
-  await bot.sendMessage(REPORT_CHAT_ID, report, {
-    parse_mode: "HTML"
-  });
+  await bot.sendMessage(
+    REPORT_CHAT_ID,
+    report,
+    {
+      parse_mode: "HTML"
+    }
+  );
+
+  if (badTg.length) {
+    for (const user of badTg) {
+      await supabase
+        .from("tg_group_users")
+        .update({
+          is_deleted: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq("user_id", String(user.user_id));
+    }
+  }
 
   console.log("Hourly WA/TG report sent");
 }
@@ -696,6 +983,7 @@ autoLoadSessions({
   SESSION_SECRET,
   SESSION_BUCKET,
   activeSessions,
+  deletingWaPhones,
   scheduleSessionUpload,
   saveStatus,
   markSheetBanAndReport,
@@ -713,7 +1001,3 @@ setTimeout(() => {
 setInterval(() => {
   sendHourlyReport();
 }, 60 * 60 * 1000);
-
-setTimeout(() => {
-  sendHourlyReport();
-}, 20000);
