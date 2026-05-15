@@ -1,5 +1,4 @@
 const P = require("pino");
-const QRCode = require("qrcode");
 
 const {
   default: makeWASocket,
@@ -28,156 +27,186 @@ async function startWhatsApp({
   SESSION_SECRET,
   SESSION_BUCKET,
   activeSessions,
+  deletingWaPhones,
   scheduleSessionUpload,
   saveStatus,
   markSheetBanAndReport
 }) {
-  if (activeSessions.has(phone)) {
-    await bot.sendMessage(
-      chatId,
-      `⚠️ WhatsApp ${phone} уже запущен`
-    );
+  try {
+    const existingSession =
+      activeSessions.get(phone);
 
-    return;
-  }
+    if (
+      existingSession &&
+      typeof existingSession.logout === "function"
+    ) {
+      console.log(
+        `WhatsApp ${phone} уже запущен`
+      );
 
-  activeSessions.set(phone, true);
+      return;
+    }
 
-  await restoreSessionFromStorage({
-    phone,
-    supabase,
-    sessionSecret: SESSION_SECRET,
-    bucket: SESSION_BUCKET
-  });
+    activeSessions.set(phone, {
+      status: "starting"
+    });
 
-  const sessionPath = `./sessions/wa_${phone}`;
+    await restoreSessionFromStorage({
+      phone,
+      supabase,
+      sessionSecret: SESSION_SECRET,
+      bucket: SESSION_BUCKET
+    });
 
-  const { state, saveCreds } =
-    await useMultiFileAuthState(sessionPath);
+    const sessionPath = `./sessions/wa_${phone}`;
 
-  const proxy = await getProxyForPhone({
-    phone,
-    supabase
-  });
+    const { state, saveCreds } =
+      await useMultiFileAuthState(sessionPath);
 
-  let agent = undefined;
+    const proxy = await getProxyForPhone({
+      phone,
+      supabase
+    });
 
-  if (proxy) {
-    const auth =
-      proxy.username && proxy.password
-        ? `${proxy.username}:${proxy.password}@`
-        : "";
+    let agent = undefined;
 
-    const proxyUrl =
-      `${proxy.type}://${auth}${proxy.host}:${proxy.port}`;
+    if (proxy) {
+      const auth =
+        proxy.username && proxy.password
+          ? `${proxy.username}:${proxy.password}@`
+          : "";
 
-    agent = new SocksProxyAgent(proxyUrl);
+      const proxyUrl =
+        `${proxy.type}://${auth}${proxy.host}:${proxy.port}`;
 
-    console.log(
-      `Using proxy for ${phone}: ${proxy.host}:${proxy.port}`
-    );
-  }
+      agent = new SocksProxyAgent(proxyUrl);
 
-  const sock = makeWASocket({
-    auth: state,
-    logger: P({ level: "silent" }),
-    printQRInTerminal: false,
-    agent,
-    fetchAgent: agent
-  });
-
-  sock.ev.on("creds.update", async () => {
-    await saveCreds();
-    scheduleSessionUpload(phone);
-  });
-
-  sock.ev.on("connection.update", async (update) => {
-    const {
-      connection,
-      qr,
-      lastDisconnect
-    } = update;
-
-    if (qr) {
-      await saveStatus({
-        phone,
-        status: "need_qr",
-        supabase
-      });
-
-      const qrBuffer =
-        await QRCode.toBuffer(qr);
-
-      await bot.sendPhoto(
-        chatId,
-        qrBuffer,
-        {
-          caption:
-            `📲 QR для WhatsApp ${phone}`
-        }
+      console.log(
+        `Using proxy for ${phone}: ${proxy.host}:${proxy.port}`
       );
     }
 
-    if (connection === "open") {
-      await saveStatus({
-        phone,
-        status: "connected",
-        supabase
-      });
+    const sock = makeWASocket({
+      auth: state,
+      logger: P({ level: "silent" }),
+      printQRInTerminal: false,
+      agent,
+      fetchAgent: agent
+    });
 
-      await uploadSessionToStorage({
-        phone,
-        supabase,
-        sessionSecret: SESSION_SECRET,
-        bucket: SESSION_BUCKET
-      });
-    }
+    activeSessions.set(phone, sock);
 
-    if (connection === "close") {
-      const code =
-        lastDisconnect?.error?.output?.statusCode;
+    sock.ev.on("creds.update", async () => {
+      await saveCreds();
+      scheduleSessionUpload(phone);
+    });
 
-      activeSessions.delete(phone);
+    sock.ev.on("connection.update", async (update) => {
+      const {
+        connection,
+        qr,
+        lastDisconnect
+      } = update;
 
-      if (code === DisconnectReason.loggedOut) {
+      if (qr) {
         await saveStatus({
           phone,
-          status: "logged_out",
-          error: "Need new QR",
+          status: "need_qr",
           supabase
         });
 
-        await markSheetBanAndReport(
-          phone,
-          "Разлогинен"
+        console.log(
+          `WA ${phone} требует QR, в канал не отправляем`
         );
-
-        return;
       }
 
-      await saveStatus({
-        phone,
-        status: "disconnected",
-        error: `Disconnect code: ${code}`,
-        supabase
-      });
-
-      setTimeout(() => {
-        startWhatsApp({
+      if (connection === "open") {
+        await saveStatus({
           phone,
-          chatId,
-          bot,
-          supabase,
-          SESSION_SECRET,
-          SESSION_BUCKET,
-          activeSessions,
-          scheduleSessionUpload,
-          saveStatus,
-          markSheetBanAndReport
+          status: "connected",
+          supabase
         });
-      }, 10000);
-    }
-  });
+
+        await uploadSessionToStorage({
+          phone,
+          supabase,
+          sessionSecret: SESSION_SECRET,
+          bucket: SESSION_BUCKET
+        });
+
+        console.log(
+          `WA ${phone} connected`
+        );
+      }
+
+      if (connection === "close") {
+        const code =
+          lastDisconnect?.error?.output?.statusCode;
+
+        activeSessions.delete(phone);
+
+        if (
+          deletingWaPhones &&
+          deletingWaPhones.has(phone)
+        ) {
+          console.log(
+            `WA ${phone} удаляется вручную, BAN не ставим`
+          );
+
+          deletingWaPhones.delete(phone);
+          return;
+        }
+
+        if (code === DisconnectReason.loggedOut) {
+          await saveStatus({
+            phone,
+            status: "logged_out",
+            error: "Need new QR",
+            supabase
+          });
+
+          if (typeof markSheetBanAndReport === "function") {
+            await markSheetBanAndReport({
+              phone,
+              reason: "Разлогинен"
+            });
+          }
+
+          return;
+        }
+
+        await saveStatus({
+          phone,
+          status: "disconnected",
+          error: `Disconnect code: ${code}`,
+          supabase
+        });
+
+        setTimeout(() => {
+          startWhatsApp({
+            phone,
+            chatId,
+            bot,
+            supabase,
+            SESSION_SECRET,
+            SESSION_BUCKET,
+            activeSessions,
+            deletingWaPhones,
+            scheduleSessionUpload,
+            saveStatus,
+            markSheetBanAndReport
+          });
+        }, 10000);
+      }
+    });
+  } catch (err) {
+    console.log(
+      `WA start error ${phone}:`,
+      err
+    );
+
+    activeSessions.delete(phone);
+  }
 }
 
 module.exports = {
