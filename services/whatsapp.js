@@ -99,7 +99,10 @@ async function startWhatsApp({
 
     sock.ev.on("creds.update", async () => {
       await saveCreds();
-      scheduleSessionUpload(phone);
+
+      if (typeof scheduleSessionUpload === "function") {
+        scheduleSessionUpload(phone);
+      }
     });
 
     sock.ev.on("connection.update", async (update) => {
@@ -120,29 +123,29 @@ async function startWhatsApp({
           const qrBuffer =
             await QRCode.toBuffer(qr);
 
-          if (String(chatId) !== String(process.env.REPORT_CHAT_ID)) {
-            await bot.sendPhoto(
-              chatId,
-              qrBuffer,
-              {
-                caption:
-                  `📲 QR для WhatsApp ${phone}`
-              }
-            );
+          await bot.sendPhoto(
+            chatId,
+            qrBuffer,
+            {
+              caption: `📲 QR для WhatsApp ${phone}`
+            }
+          );
 
-            console.log(
-              `WA QR sent to admin: ${phone}`
-            );
-          } else {
-            console.log(
-              `WA ${phone} требует QR, в канал отчёта не отправляем`
-            );
-          }
+          console.log(
+            `WA QR sent: ${phone}`
+          );
         } catch (err) {
           console.log(
             `QR send error ${phone}:`,
             err.message
           );
+
+          try {
+            await bot.sendMessage(
+              chatId,
+              `❌ Не смог отправить QR для ${phone}: ${err.message}`
+            );
+          } catch (_) {}
         }
       }
 
@@ -159,6 +162,11 @@ async function startWhatsApp({
           sessionSecret: SESSION_SECRET,
           bucket: SESSION_BUCKET
         });
+
+        await bot.sendMessage(
+          chatId,
+          `✅ WhatsApp ${phone} подключен`
+        ).catch(() => {});
 
         console.log(
           `WA ${phone} connected`
@@ -194,7 +202,9 @@ async function startWhatsApp({
           if (typeof markSheetBanAndReport === "function") {
             await markSheetBanAndReport({
               phone,
-              reason: "Разлогинен"
+              reason: "Разлогинен",
+              bot,
+              reportChatId: process.env.REPORT_CHAT_ID
             });
           }
 
@@ -232,6 +242,13 @@ async function startWhatsApp({
     );
 
     activeSessions.delete(phone);
+
+    try {
+      await bot.sendMessage(
+        chatId,
+        `❌ Ошибка запуска WhatsApp ${phone}: ${err.message}`
+      );
+    } catch (_) {}
   }
 }
 
