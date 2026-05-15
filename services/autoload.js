@@ -6,6 +6,7 @@ async function autoLoadSessions({
   SESSION_SECRET,
   SESSION_BUCKET,
   activeSessions,
+  deletingWaPhones,
   scheduleSessionUpload,
   saveStatus,
   markSheetBanAndReport,
@@ -43,6 +44,7 @@ async function autoLoadSessions({
         SESSION_SECRET,
         SESSION_BUCKET,
         activeSessions,
+        deletingWaPhones,
         scheduleSessionUpload,
         saveStatus,
         markSheetBanAndReport
