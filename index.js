@@ -336,6 +336,8 @@ function startWaSheetAutoImportInterval() {
 
 startWaSheetAutoImportInterval();
 
+const tgSheetUpdateCache = new Map();
+
 async function markTelegramActiveByUsername(username) {
   if (!username) return;
 
@@ -347,6 +349,20 @@ async function markTelegramActiveByUsername(username) {
   if (!cleanUsername) return;
 
   try {
+    const lastUpdate =
+      tgSheetUpdateCache.get(cleanUsername);
+
+    if (
+      lastUpdate &&
+      Date.now() - lastUpdate < 10 * 60 * 1000
+    ) {
+      console.log(
+        `TG skip sheet update cooldown: ${cleanUsername}`
+      );
+
+      return;
+    }
+
     const { data: tgUser } = await supabase
       .from("tg_group_users")
       .select("*")
@@ -382,6 +398,10 @@ async function markTelegramActiveByUsername(username) {
         .trim()
         .toLowerCase();
 
+      const currentStatus = String(status || "")
+        .trim()
+        .toUpperCase();
+
       if (type !== "Telegramm") {
         continue;
       }
@@ -392,7 +412,20 @@ async function markTelegramActiveByUsername(username) {
         continue;
       }
 
-      if (status !== "CONNECTION") {
+      if (currentStatus === "ACTIVE") {
+        console.log(
+          `TG already ACTIVE: ${cleanUsername}`
+        );
+
+        tgSheetUpdateCache.set(
+          cleanUsername,
+          Date.now()
+        );
+
+        return;
+      }
+
+      if (currentStatus !== "CONNECTION") {
         continue;
       }
 
@@ -406,6 +439,11 @@ async function markTelegramActiveByUsername(username) {
           adName,
           operator
         ]
+      );
+
+      tgSheetUpdateCache.set(
+        cleanUsername,
+        Date.now()
       );
 
       console.log(
