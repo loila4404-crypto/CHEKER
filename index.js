@@ -172,6 +172,23 @@ if (BOT_MODE === "main") {
   });
 }
 
+setInterval(async () => {
+  try {
+    console.log("WA sheet sync by timer started");
+
+    await syncWhatsAppSheetWithSupabase({
+      supabase
+    });
+
+    console.log("WA sheet sync by timer finished");
+  } catch (err) {
+    console.log(
+      "WA sheet sync by timer error:",
+      err.message
+    );
+  }
+}, 5 * 60 * 1000);
+
 app.listen(process.env.PORT || 3000, () => {
   console.log("Health server started");
 });
@@ -462,13 +479,6 @@ async function markTelegramActiveByUsername(username) {
 
 async function getAccountsStatusText() {
   console.log("STATUS BUTTON CLICKED");
-  console.log("SYNC FUNCTION TYPE:", typeof syncWhatsAppSheetWithSupabase);
-
-  await syncWhatsAppSheetWithSupabase({
-    supabase
-  });
-
-  console.log("SYNC FINISHED");
 
   const waRows = await readAccountsFromSheet();
   const tgRows = await readTelegramFromSheet();
@@ -489,17 +499,27 @@ async function getAccountsStatusText() {
     )
     .filter(Boolean);
 
-  console.log("WA SHEET ACCOUNTS:", waSheetAccounts);
-
-  const { data: waAccounts } = await supabase
+  const { data: waAccounts, error: waError } = await supabase
     .from("wa_accounts")
     .select("phone,status");
 
-  const { data: tgUsers } = await supabase
+  if (waError) {
+    console.log(
+      "WA status read error:",
+      waError.message
+    );
+  }
+
+  const { data: tgUsers, error: tgError } = await supabase
     .from("tg_group_users")
     .select("username,is_bot");
 
-  console.log("WA SUPABASE ACCOUNTS:", waAccounts);
+  if (tgError) {
+    console.log(
+      "TG status read error:",
+      tgError.message
+    );
+  }
 
   const connectedStatuses = [
     "connected",
