@@ -183,7 +183,7 @@ setInterval(async () => {
     await syncTelegramSheetWithSupabase({
       supabase
     });
-    
+
     console.log("WA sheet sync by timer finished");
   } catch (err) {
     console.log(
@@ -950,91 +950,187 @@ function esc(text) {
 }
 
 async function sendHourlyReport() {
-  console.log("Hourly WA/TG report started");
+  try {
+    console.log("WA/TG report started");
 
-  const { data: waAccounts } = await supabase
-    .from("wa_accounts")
-    .select("*");
+    await syncWhatsAppSheetWithSupabase({
+      supabase
+    });
 
-  const { data: tgUsers } = await supabase
-    .from("tg_group_users")
-    .select("*")
-    .eq("is_bot", false);
+    await syncTelegramSheetWithSupabase({
+      supabase
+    });
 
-  const waList = waAccounts || [];
-  const tgList = tgUsers || [];
+    const waRows = await readAccountsFromSheet();
+    const tgRows = await readTelegramFromSheet();
 
-  const badWa = waList.filter(acc =>
-    acc.status === "logged_out" ||
-    acc.status === "need_qr"
-  );
+    const waSheetAccounts = waRows
+      .map(row =>
+        String(row[2] || "")
+          .replace(/[^\d]/g, "")
+      )
+      .filter(phone => phone.length >= 8);
 
-  const badTg = tgList.filter(user =>
-    (
-      user.member_status === "left" ||
-      user.member_status === "kicked" ||
-      user.member_status === "check_error"
-    ) &&
-    user.is_deleted !== true
-  );
+    const tgSheetAccounts = tgRows
+      .map(row =>
+        String(row[2] || "")
+          .replace("@", "")
+          .trim()
+          .toLowerCase()
+      )
+      .filter(Boolean);
 
-  const badWaText = badWa.length
-    ? badWa.map(acc =>
-        `• <code>${esc(acc.phone)}</code> — <b>${esc(acc.status)}</b>`
-      ).join("\n")
-    : "<i>Нет проблем</i>";
+    const { data: waAccounts, error: waError } = await supabase
+      .from("wa_accounts")
+      .select("phone,status,last_error");
 
-  const badTgText = badTg.length
-    ? badTg.map(user => {
-        const name = user.username
-          ? `@${esc(user.username)}`
-          : esc(user.first_name || "без username");
+    if (waError) {
+      console.log(
+        "WA report Supabase error:",
+        waError.message
+      );
+    }
 
-        return `• ${name} | ID: <code>${esc(user.user_id)}</code> — <b>${esc(user.member_status || "deleted")}</b>`;
-      }).join("\n")
-    : "<i>Нет проблем</i>";
+    const { data: tgUsers, error: tgError } = await supabase
+      .from("tg_group_users")
+      .select("username,user_id,first_name,member_status,is_bot,is_deleted");
 
-  const report = `
+    if (tgError) {
+      console.log(
+        "TG report Supabase error:",
+        tgError.message
+      );
+    }
+
+    const connectedStatuses = [
+      "connected",
+      "active",
+      "open"
+    ];
+
+    const waProblemStatuses = [
+      "logged_out",
+      "ban",
+      "banned"
+    ];
+
+    const waList = (waAccounts || [])
+      .filter(acc => {
+        const phone = String(acc.phone || "")
+          .replace(/[^\d]/g, "");
+
+        return waSheetAccounts.includes(phone);
+      });
+
+    const tgList = (tgUsers || [])
+      .filter(user => {
+        if (user.is_bot === true) return false;
+
+        const username = String(user.username || "")
+          .replace("@", "")
+          .trim()
+          .toLowerCase();
+
+        return tgSheetAccounts.includes(username);
+      });
+
+    const waConnected = waList
+      .filter(acc =>
+        connectedStatuses.includes(
+          String(acc.status || "")
+            .trim()
+            .toLowerCase()
+        )
+      );
+
+    const waProblem = waList
+      .filter(acc =>
+        waProblemStatuses.includes(
+          String(acc.status || "")
+            .trim()
+            .toLowerCase()
+        )
+      );
+
+    const tgConnected = tgList
+      .filter(user =>
+        user.member_status !== "left" &&
+        user.member_status !== "kicked" &&
+        user.member_status !== "check_error" &&
+        user.is_deleted !== true
+      );
+
+    const tgProblem = tgList
+      .filter(user =>
+        user.member_status === "left" ||
+        user.member_status === "kicked" ||
+        user.member_status === "check_error" ||
+        user.is_deleted === true
+      );
+
+    const waProblemText = waProblem.length
+      ? waProblem.map(acc => {
+          const phone = String(acc.phone || "");
+          const status = String(acc.status || "unknown");
+          const error = acc.last_error
+            ? ` | ${esc(acc.last_error)}`
+            : "";
+
+          return `• <code>${esc(phone)}</code> — <b>${esc(status)}</b>${error}`;
+        }).join("\n")
+      : "<i>Нет проблем</i>";
+
+    const tgProblemText = tgProblem.length
+      ? tgProblem.map(user => {
+          const username = user.username
+            ? `@${esc(user.username)}`
+            : esc(user.first_name || "без username");
+
+          const status = user.member_status || "deleted";
+
+          return `• ${username} | ID: <code>${esc(user.user_id)}</code> — <b>${esc(status)}</b>`;
+        }).join("\n")
+      : "<i>Нет проблем</i>";
+
+    const report = `
 <b>📊 WA/TG ОТЧЁТ</b>
 
 <b>🟢 WhatsApp</b>
-Проверено: <b>${waList.length}</b>
-Проблемы: <b>${badWa.length}</b>
+В таблице: <b>${waSheetAccounts.length}</b>
+Подключено: <b>${waConnected.length}</b>
+Не подключено: <b>${Math.max(waSheetAccounts.length - waConnected.length, 0)}</b>
+Проблемы: <b>${waProblem.length}</b>
 
 <b>⛔ Проблемные WhatsApp:</b>
-${badWaText}
+${waProblemText}
 
-<b>👥 Telegram</b>
-Проверено: <b>${tgList.length}</b>
-Проблемы: <b>${badTg.length}</b>
+<b>🔵 Telegram</b>
+В таблице: <b>${tgSheetAccounts.length}</b>
+Подключено: <b>${tgConnected.length}</b>
+Не подключено: <b>${Math.max(tgSheetAccounts.length - tgConnected.length, 0)}</b>
+Проблемы: <b>${tgProblem.length}</b>
 
 <b>⛔ Проблемные Telegram:</b>
-${badTgText}
+${tgProblemText}
 
 <i>🕒 ${new Date().toLocaleString()}</i>
 `;
 
-  await bot.sendMessage(
-    REPORT_CHAT_ID,
-    report,
-    {
-      parse_mode: "HTML"
-    }
-  );
+    await bot.sendMessage(
+      REPORT_CHAT_ID,
+      report,
+      {
+        parse_mode: "HTML"
+      }
+    );
 
-  if (badTg.length) {
-    for (const user of badTg) {
-      await supabase
-        .from("tg_group_users")
-        .update({
-          is_deleted: true,
-          updated_at: new Date().toISOString()
-        })
-        .eq("user_id", String(user.user_id));
-    }
+    console.log("WA/TG report sent");
+  } catch (err) {
+    console.log(
+      "WA/TG report error:",
+      err.message
+    );
   }
-
-  console.log("Hourly WA/TG report sent");
 }
 
 autoLoadSessions({
