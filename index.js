@@ -49,7 +49,8 @@ const {
 
 const {
   startWaChecker,
-  checkWaNumbersExist
+  checkWaNumbersExist,
+  checkWhatsAppLastSeenFromSheet
 } = require("./services/waChecker");
 
 const {
@@ -171,6 +172,7 @@ if (BOT_MODE === "main") {
     updateTelegramSheetRow,
     startWhatsApp,
     startWaChecker,
+    checkWhatsAppLastSeenFromSheet,
     activeSessions,
     scheduleSessionUpload,
     saveStatus,
@@ -1163,6 +1165,7 @@ autoLoadSessions({
   scheduleSessionUpload,
   saveStatus,
   markSheetBanAndReport,
+  checkWhatsAppLastSeenFromSheet,
   WORKER_ID: process.env.WORKER_ID || "worker_1"
 });
 
