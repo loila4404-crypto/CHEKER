@@ -13,6 +13,7 @@ const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
 
+const fetch = global.fetch;
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
@@ -1153,6 +1154,7 @@ ${tgProblemText}
   }
 }
 
+/*
 autoLoadSessions({
   supabase,
   REPORT_CHAT_ID,
@@ -1168,6 +1170,7 @@ autoLoadSessions({
   checkWhatsAppLastSeenFromSheet,
   WORKER_ID: process.env.WORKER_ID || "worker_1"
 });
+*/
 
 setInterval(() => {
   checkTelegramDeletedUsers();
