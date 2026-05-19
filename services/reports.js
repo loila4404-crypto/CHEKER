@@ -33,6 +33,7 @@ async function markSheetBanAndReport({
           "WhatsApp",
           account,
           "BAN",
+          "",
           adName,
           operator
         ]);
