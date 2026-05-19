@@ -376,15 +376,47 @@ if (waitingForWaWebLogin.has(user.id)) {
     }
 
     if (text === "🔍 Проверить WA из таблицы") {
-      console.log("WA SHEET CHECK BUTTON PRESSED");
+  console.log("WA SHEET CHECK BUTTON PRESSED");
 
-      await checkWhatsAppLastSeenFromSheet({
-        bot,
-        chatId: chat.id
-      });
+  try {
+    await bot.sendMessage(
+      chat.id,
+      "⏳ Запускаю проверку WhatsApp из таблицы..."
+    );
+
+    const response = await fetch(
+      `${process.env.WA_WEB_CHECKER_URL}/check-sheet`
+    );
+
+    const data = await response.json();
+
+    if (!data.ok) {
+      await bot.sendMessage(
+        chat.id,
+        `❌ Ошибка WA checker:\n${data.error || "Unknown error"}`
+      );
 
       return;
     }
+
+    await bot.sendMessage(
+      chat.id,
+      `✅ Проверка завершена.
+
+Проверено: ${data.checked}
+Есть lastSeen: ${data.live}
+Пусто: ${data.unknown}
+Ошибки: ${data.errors}`
+    );
+  } catch (err) {
+    await bot.sendMessage(
+      chat.id,
+      `❌ WA checker не ответил:\n${err.message}`
+    );
+  }
+
+  return;
+}
 
     if (text === "🗑 Удалить") {
       waitingForDelete.add(user.id);
@@ -577,39 +609,31 @@ https://t.me/${me.username}?start=admin_${token}`
   });
 
   async function sendAdminMenu(chatId) {
-    await bot.sendMessage(
-      chatId,
-      `👋 WA Checker готов`,
-      {
-        reply_markup: {
-          keyboard: [
-            [
-              "📊 Статус",
-              "🗑 Удалить"
-            ],
-            [
-              "🟢 WA Проверяльщик",
-              "🔐 WA Web Login"
-            ],
-            [
-              "🔍 Проверить WA из таблицы"
-            ],
-            [
-              "🔗 WhatsApp",
-              "🔵 Telegram"
-            ],
-            [
-              "🔐 Доступ"
-            ],
-            [
-              "⏱ Интервал"
-            ]
+  await bot.sendMessage(
+    chatId,
+    `👋 WA Checker готов`,
+    {
+      reply_markup: {
+        keyboard: [
+          [
+            "📊 Статус",
+            "🗑 Удалить"
           ],
-          resize_keyboard: true
-        }
+          [
+            "🔵 Telegram"
+          ],
+          [
+            "🔐 Доступ"
+          ],
+          [
+            "⏱ Интервал"
+          ]
+        ],
+        resize_keyboard: true
       }
-    );
-  }
+    }
+  );
+}
 }
 
 module.exports = {
