@@ -185,7 +185,9 @@ async function startBrowser() {
     headless: true,
     args: [
       "--no-sandbox",
-      "--disable-setuid-sandbox"
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu"
     ]
   });
 
@@ -205,9 +207,17 @@ async function startBrowser() {
 
   page = await context.newPage();
 
-  await page.goto("https://web.whatsapp.com", {
-    waitUntil: "domcontentloaded"
-  });
+  page.setDefaultTimeout(120000);
+  page.setDefaultNavigationTimeout(120000);
+
+  try {
+    await page.goto("https://web.whatsapp.com", {
+      waitUntil: "load",
+      timeout: 120000
+    });
+  } catch (err) {
+    console.log("WhatsApp Web goto timeout, continuing:", err.message);
+  }
 
   console.log("WhatsApp Web opened");
 
