@@ -303,7 +303,18 @@ async function getQrScreenshotBuffer() {
     waitUntil: "domcontentloaded"
   });
 
-  await page.waitForTimeout(15000);
+  try {
+    await page.waitForSelector(
+      "canvas",
+      {
+        timeout: 30000
+      }
+    );
+
+    await page.waitForTimeout(3000);
+  } catch (err) {
+    console.log("QR canvas not loaded");
+  }
 
   if (await isAuthorized()) {
     await saveAuthState();
