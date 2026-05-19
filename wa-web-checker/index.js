@@ -33,16 +33,24 @@ const AUTH_DIR =
   path.join(__dirname, "auth");
 
 const AUTH_PATH =
-  path.join(
-    AUTH_DIR,
-    AUTH_FILE
-  );
+  path.join(AUTH_DIR, AUTH_FILE);
 
 let browser = null;
 let context = null;
 let page = null;
 let sheetsClient = null;
 let checkSheetRunning = false;
+
+function sleep(ms) {
+  return new Promise(resolve =>
+    setTimeout(resolve, ms)
+  );
+}
+
+function cleanPhone(phone) {
+  return String(phone || "")
+    .replace(/[^\d]/g, "");
+}
 
 async function downloadAuthFromSupabase() {
   try {
@@ -52,42 +60,25 @@ async function downloadAuthFromSupabase() {
       });
     }
 
-    const {
-      data,
-      error
-    } = await supabase.storage
-      .from(AUTH_BUCKET)
-      .download(AUTH_FILE);
+    const { data, error } =
+      await supabase.storage
+        .from(AUTH_BUCKET)
+        .download(AUTH_FILE);
 
     if (error || !data) {
-      console.log(
-        "No auth in Supabase"
-      );
-
+      console.log("No auth in Supabase");
       return false;
     }
 
     const buffer =
-      Buffer.from(
-        await data.arrayBuffer()
-      );
+      Buffer.from(await data.arrayBuffer());
 
-    fs.writeFileSync(
-      AUTH_PATH,
-      buffer
-    );
+    fs.writeFileSync(AUTH_PATH, buffer);
 
-    console.log(
-      "Auth downloaded from Supabase"
-    );
-
+    console.log("Auth downloaded from Supabase");
     return true;
   } catch (err) {
-    console.log(
-      "downloadAuth error:",
-      err.message
-    );
-
+    console.log("downloadAuth error:", err.message);
     return false;
   }
 }
@@ -101,81 +92,105 @@ async function uploadAuthToSupabase() {
     const fileBuffer =
       fs.readFileSync(AUTH_PATH);
 
-    const {
-      error
-    } = await supabase.storage
-      .from(AUTH_BUCKET)
-      .upload(
-        AUTH_FILE,
-        fileBuffer,
-        {
+    const { error } =
+      await supabase.storage
+        .from(AUTH_BUCKET)
+        .upload(AUTH_FILE, fileBuffer, {
           upsert: true,
-          contentType:
-            "application/json"
-        }
-      );
+          contentType: "application/json"
+        });
 
     if (error) {
-      console.log(
-        "uploadAuth error:",
-        error.message
-      );
-
+      console.log("uploadAuth error:", error.message);
       return false;
     }
 
-    console.log(
-      "Auth uploaded to Supabase"
-    );
-
+    console.log("Auth uploaded to Supabase");
     return true;
   } catch (err) {
-    console.log(
-      "uploadAuth crash:",
-      err.message
-    );
-
+    console.log("uploadAuth crash:", err.message);
     return false;
   }
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+async function saveAuthState() {
+  try {
+    if (!context) return false;
+
+    await context.storageState({
+      path: AUTH_PATH
+    });
+
+    await uploadAuthToSupabase();
+
+    return true;
+  } catch (err) {
+    console.log("saveAuthState error:", err.message);
+    return false;
+  }
 }
 
-function cleanPhone(phone) {
-  return String(phone || "").replace(/[^\d]/g, "");
+async function isAuthorized() {
+  if (!page) return false;
+
+  try {
+    const text =
+      await page.locator("body").innerText({
+        timeout: 5000
+      });
+
+    if (
+      text.includes("Scan to log in") ||
+      text.includes("Отсканируйте, чтобы войти") ||
+      text.includes("Log in with phone number") ||
+      text.includes("Войти по номеру телефона")
+    ) {
+      return false;
+    }
+
+    const inputCount =
+      await page.locator('div[contenteditable="true"]').count();
+
+    return inputCount > 0;
+  } catch (err) {
+    return false;
+  }
 }
 
 async function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
 
-  const googleCredentials = process.env.GOOGLE_SERVICE_JSON
-    ? JSON.parse(process.env.GOOGLE_SERVICE_JSON)
-    : null;
+  const googleCredentials =
+    process.env.GOOGLE_SERVICE_JSON
+      ? JSON.parse(process.env.GOOGLE_SERVICE_JSON)
+      : null;
 
-  const auth = new google.auth.GoogleAuth({
-    credentials: googleCredentials || undefined,
-    keyFile: googleCredentials
-      ? undefined
-      : process.env.GOOGLE_SERVICE_FILE,
-    scopes: [
-      "https://www.googleapis.com/auth/spreadsheets"
-    ]
-  });
+  const auth =
+    new google.auth.GoogleAuth({
+      credentials: googleCredentials || undefined,
+      keyFile: googleCredentials
+        ? undefined
+        : process.env.GOOGLE_SERVICE_FILE,
+      scopes: [
+        "https://www.googleapis.com/auth/spreadsheets"
+      ]
+    });
 
-  const client = await auth.getClient();
+  const client =
+    await auth.getClient();
 
-  sheetsClient = google.sheets({
-    version: "v4",
-    auth: client
-  });
+  sheetsClient =
+    google.sheets({
+      version: "v4",
+      auth: client
+    });
 
   return sheetsClient;
 }
 
 async function readAccountsFromSheet() {
-  const sheets = await getSheetsClient();
+  const sheets =
+    await getSheetsClient();
 
   const range =
     `${process.env.GOOGLE_SHEET_NAME}!A3:G1000`;
@@ -190,7 +205,8 @@ async function readAccountsFromSheet() {
 }
 
 async function updateSheetRow(rowNumber, values) {
-  const sheets = await getSheetsClient();
+  const sheets =
+    await getSheetsClient();
 
   const range =
     `${process.env.GOOGLE_SHEET_NAME}!A${rowNumber}:G${rowNumber}`;
@@ -210,30 +226,35 @@ async function startBrowser() {
 
   await downloadAuthFromSupabase();
 
-  browser = await chromium.launch({
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox"
-    ]
-  });
+  browser =
+    await chromium.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox"
+      ]
+    });
 
-  const storageStatePath = "auth/state.json";
+  const contextOptions =
+    fs.existsSync(AUTH_PATH)
+      ? {
+          storageState: AUTH_PATH
+        }
+      : {};
 
-  const contextOptions = fs.existsSync(storageStatePath)
-    ? { storageState: storageStatePath }
-    : {};
+  context =
+    await browser.newContext({
+      ...contextOptions,
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      viewport: {
+        width: 1366,
+        height: 768
+      }
+    });
 
-  context = await browser.newContext({
-  ...contextOptions,
-  userAgent:
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  viewport: {
-    width: 1366,
-    height: 768
-  }
-});
-  page = await context.newPage();
+  page =
+    await context.newPage();
 
   await page.goto("https://web.whatsapp.com", {
     waitUntil: "domcontentloaded"
@@ -242,23 +263,75 @@ async function startBrowser() {
   console.log("WhatsApp Web opened");
 
   try {
-    await page.waitForSelector('div[contenteditable="true"]', {
-      timeout: 60000
-    });
+    await page.waitForSelector(
+      'div[contenteditable="true"]',
+      {
+        timeout: 60000
+      }
+    );
 
-    await context.storageState({
-      path: storageStatePath
-    });
+    await saveAuthState();
 
     console.log("WhatsApp authorized. Session saved.");
-    await uploadAuthToSupabase();
   } catch (err) {
-    console.log("WhatsApp not authorized. Scan QR manually.");
+    console.log("WhatsApp not authorized. Use /qr.");
   }
 }
 
+async function ensureWhatsAppPage() {
+  if (!page) {
+    if (!browser || !context) {
+      await startBrowser();
+    } else {
+      page = await context.newPage();
+    }
+  }
+
+  const url = page.url();
+
+  if (!url.includes("web.whatsapp.com")) {
+    await page.goto("https://web.whatsapp.com", {
+      waitUntil: "domcontentloaded"
+    });
+  }
+}
+
+async function getQrScreenshotBuffer() {
+  await ensureWhatsAppPage();
+
+  await page.goto("https://web.whatsapp.com", {
+    waitUntil: "domcontentloaded"
+  });
+
+  await page.waitForTimeout(5000);
+
+  if (await isAuthorized()) {
+    await saveAuthState();
+
+    return {
+      authorized: true,
+      buffer: await page.screenshot({
+        type: "png",
+        fullPage: false
+      })
+    };
+  }
+
+  const buffer =
+    await page.screenshot({
+      type: "png",
+      fullPage: false
+    });
+
+  return {
+    authorized: false,
+    buffer
+  };
+}
+
 async function checkPhoneLastSeen(phone) {
-  const clean = cleanPhone(phone);
+  const clean =
+    cleanPhone(phone);
 
   if (!clean || clean.length < 8) {
     return {
@@ -289,6 +362,16 @@ async function checkPhoneLastSeen(phone) {
     await page.locator("body").innerText().catch(() => "");
 
   if (
+    bodyText.includes("Scan to log in") ||
+    bodyText.includes("Отсканируйте, чтобы войти")
+  ) {
+    return {
+      ok: false,
+      error: "WA Web not authorized"
+    };
+  }
+
+  if (
     bodyText.includes("Phone number shared via url is invalid") ||
     bodyText.includes("Номер телефона, отправленный через ссылку, недействителен")
   ) {
@@ -307,19 +390,19 @@ async function checkPhoneLastSeen(phone) {
   try {
     await page.waitForTimeout(5000);
 
-    pageText = await page
-      .locator("body")
-      .innerText({
+    pageText =
+      await page.locator("body").innerText({
         timeout: 10000
       });
   } catch (err) {
     pageText = "";
   }
 
-  const lines = pageText
-    .split("\n")
-    .map(x => x.trim())
-    .filter(Boolean);
+  const lines =
+    pageText
+      .split("\n")
+      .map(x => x.trim())
+      .filter(Boolean);
 
   const usefulLine =
     lines.find(line =>
@@ -348,6 +431,13 @@ async function checkSheet() {
     };
   }
 
+  if (!(await isAuthorized())) {
+    return {
+      ok: false,
+      error: "WA Web not authorized"
+    };
+  }
+
   checkSheetRunning = true;
 
   let checked = 0;
@@ -357,7 +447,8 @@ async function checkSheet() {
   let errors = 0;
 
   try {
-    const rows = await readAccountsFromSheet();
+    const rows =
+      await readAccountsFromSheet();
 
     for (let i = 0; i < rows.length; i++) {
       const rowNumber = i + 3;
@@ -372,14 +463,16 @@ async function checkSheet() {
 
       if (type !== "WhatsApp") continue;
 
-      const phone = cleanPhone(account);
+      const phone =
+        cleanPhone(account);
 
       if (!phone || phone.length < 8) continue;
 
       checked++;
 
       try {
-        const result = await checkPhoneLastSeen(phone);
+        const result =
+          await checkPhoneLastSeen(phone);
 
         let newStatus = "UNKNOWN";
         let lastSeenText = oldLastSeen || "";
@@ -432,6 +525,8 @@ async function checkSheet() {
       await sleep(20000);
     }
 
+    await saveAuthState();
+
     return {
       ok: true,
       checked,
@@ -456,6 +551,49 @@ app.get("/health", (req, res) => {
   });
 });
 
+app.get("/auth-status", async (req, res) => {
+  try {
+    const authorized =
+      await isAuthorized();
+
+    res.json({
+      ok: true,
+      authorized
+    });
+  } catch (err) {
+    res.json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+app.get("/qr", async (req, res) => {
+  try {
+    const result =
+      await getQrScreenshotBuffer();
+
+    res.setHeader(
+      "Content-Type",
+      "image/png"
+    );
+
+    res.setHeader(
+      "X-WA-Authorized",
+      result.authorized ? "true" : "false"
+    );
+
+    res.end(result.buffer);
+  } catch (err) {
+    console.log("QR error:", err.message);
+
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
 app.get("/check", async (req, res) => {
   try {
     const result =
@@ -474,7 +612,8 @@ app.get("/check", async (req, res) => {
 
 app.get("/check-sheet", async (req, res) => {
   try {
-    const result = await checkSheet();
+    const result =
+      await checkSheet();
 
     res.json(result);
   } catch (err) {
