@@ -224,7 +224,15 @@ async function startBrowser() {
     ? { storageState: storageStatePath }
     : {};
 
-  context = await browser.newContext(contextOptions);
+  context = await browser.newContext({
+  ...contextOptions,
+  userAgent:
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  viewport: {
+    width: 1366,
+    height: 768
+  }
+});
   page = await context.newPage();
 
   await page.goto("https://web.whatsapp.com", {
