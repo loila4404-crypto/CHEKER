@@ -7,33 +7,21 @@ const path = require("path");
 const { google } = require("googleapis");
 const { chromium } = require("playwright");
 
-const {
-  createClient
-} = require("@supabase/supabase-js");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 
-const PORT =
-  process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-const supabase =
-  createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
-  );
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
-const AUTH_BUCKET =
-  process.env.AUTH_BUCKET ||
-  "wa-web-auth";
-
-const AUTH_FILE =
-  "state.json";
-
-const AUTH_DIR =
-  path.join(__dirname, "auth");
-
-const AUTH_PATH =
-  path.join(AUTH_DIR, AUTH_FILE);
+const AUTH_BUCKET = process.env.AUTH_BUCKET || "wa-web-auth";
+const AUTH_FILE = "state.json";
+const AUTH_DIR = path.join(__dirname, "auth");
+const AUTH_PATH = path.join(AUTH_DIR, AUTH_FILE);
 
 let browser = null;
 let context = null;
@@ -42,37 +30,29 @@ let sheetsClient = null;
 let checkSheetRunning = false;
 
 function sleep(ms) {
-  return new Promise(resolve =>
-    setTimeout(resolve, ms)
-  );
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function cleanPhone(phone) {
-  return String(phone || "")
-    .replace(/[^\d]/g, "");
+  return String(phone || "").replace(/[^\d]/g, "");
 }
 
 async function downloadAuthFromSupabase() {
   try {
     if (!fs.existsSync(AUTH_DIR)) {
-      fs.mkdirSync(AUTH_DIR, {
-        recursive: true
-      });
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
     }
 
-    const { data, error } =
-      await supabase.storage
-        .from(AUTH_BUCKET)
-        .download(AUTH_FILE);
+    const { data, error } = await supabase.storage
+      .from(AUTH_BUCKET)
+      .download(AUTH_FILE);
 
     if (error || !data) {
       console.log("No auth in Supabase");
       return false;
     }
 
-    const buffer =
-      Buffer.from(await data.arrayBuffer());
-
+    const buffer = Buffer.from(await data.arrayBuffer());
     fs.writeFileSync(AUTH_PATH, buffer);
 
     console.log("Auth downloaded from Supabase");
@@ -85,20 +65,16 @@ async function downloadAuthFromSupabase() {
 
 async function uploadAuthToSupabase() {
   try {
-    if (!fs.existsSync(AUTH_PATH)) {
-      return false;
-    }
+    if (!fs.existsSync(AUTH_PATH)) return false;
 
-    const fileBuffer =
-      fs.readFileSync(AUTH_PATH);
+    const fileBuffer = fs.readFileSync(AUTH_PATH);
 
-    const { error } =
-      await supabase.storage
-        .from(AUTH_BUCKET)
-        .upload(AUTH_FILE, fileBuffer, {
-          upsert: true,
-          contentType: "application/json"
-        });
+    const { error } = await supabase.storage
+      .from(AUTH_BUCKET)
+      .upload(AUTH_FILE, fileBuffer, {
+        upsert: true,
+        contentType: "application/json"
+      });
 
     if (error) {
       console.log("uploadAuth error:", error.message);
@@ -117,10 +93,7 @@ async function saveAuthState() {
   try {
     if (!context) return false;
 
-    await context.storageState({
-      path: AUTH_PATH
-    });
-
+    await context.storageState({ path: AUTH_PATH });
     await uploadAuthToSupabase();
 
     return true;
@@ -134,10 +107,7 @@ async function isAuthorized() {
   if (!page) return false;
 
   try {
-    const text =
-      await page.locator("body").innerText({
-        timeout: 5000
-      });
+    const text = await page.locator("body").innerText({ timeout: 5000 });
 
     if (
       text.includes("Scan to log in") ||
@@ -148,9 +118,7 @@ async function isAuthorized() {
       return false;
     }
 
-    const inputCount =
-      await page.locator('div[contenteditable="true"]').count();
-
+    const inputCount = await page.locator('div[contenteditable="true"]').count();
     return inputCount > 0;
   } catch (err) {
     return false;
@@ -160,56 +128,43 @@ async function isAuthorized() {
 async function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
 
-  const googleCredentials =
-    process.env.GOOGLE_SERVICE_JSON
-      ? JSON.parse(process.env.GOOGLE_SERVICE_JSON)
-      : null;
+  const googleCredentials = process.env.GOOGLE_SERVICE_JSON
+    ? JSON.parse(process.env.GOOGLE_SERVICE_JSON)
+    : null;
 
-  const auth =
-    new google.auth.GoogleAuth({
-      credentials: googleCredentials || undefined,
-      keyFile: googleCredentials
-        ? undefined
-        : process.env.GOOGLE_SERVICE_FILE,
-      scopes: [
-        "https://www.googleapis.com/auth/spreadsheets"
-      ]
-    });
+  const auth = new google.auth.GoogleAuth({
+    credentials: googleCredentials || undefined,
+    keyFile: googleCredentials ? undefined : process.env.GOOGLE_SERVICE_FILE,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+  });
 
-  const client =
-    await auth.getClient();
+  const client = await auth.getClient();
 
-  sheetsClient =
-    google.sheets({
-      version: "v4",
-      auth: client
-    });
+  sheetsClient = google.sheets({
+    version: "v4",
+    auth: client
+  });
 
   return sheetsClient;
 }
 
 async function readAccountsFromSheet() {
-  const sheets =
-    await getSheetsClient();
+  const sheets = await getSheetsClient();
 
-  const range =
-    `${process.env.GOOGLE_SHEET_NAME}!A3:G1000`;
+  const range = `${process.env.GOOGLE_SHEET_NAME}!A3:G1000`;
 
-  const res =
-    await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range
-    });
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range
+  });
 
   return res.data.values || [];
 }
 
 async function updateSheetRow(rowNumber, values) {
-  const sheets =
-    await getSheetsClient();
+  const sheets = await getSheetsClient();
 
-  const range =
-    `${process.env.GOOGLE_SHEET_NAME}!A${rowNumber}:G${rowNumber}`;
+  const range = `${process.env.GOOGLE_SHEET_NAME}!A${rowNumber}:G${rowNumber}`;
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
@@ -226,35 +181,29 @@ async function startBrowser() {
 
   await downloadAuthFromSupabase();
 
-  browser =
-    await chromium.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox"
-      ]
-    });
+  browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox"
+    ]
+  });
 
-  const contextOptions =
-    fs.existsSync(AUTH_PATH)
-      ? {
-          storageState: AUTH_PATH
-        }
-      : {};
+  const contextOptions = fs.existsSync(AUTH_PATH)
+    ? { storageState: AUTH_PATH }
+    : {};
 
-  context =
-    await browser.newContext({
-      ...contextOptions,
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      viewport: {
-        width: 1366,
-        height: 768
-      }
-    });
+  context = await browser.newContext({
+    ...contextOptions,
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    viewport: {
+      width: 1366,
+      height: 768
+    }
+  });
 
-  page =
-    await context.newPage();
+  page = await context.newPage();
 
   await page.goto("https://web.whatsapp.com", {
     waitUntil: "domcontentloaded"
@@ -263,18 +212,15 @@ async function startBrowser() {
   console.log("WhatsApp Web opened");
 
   try {
-    await page.waitForSelector(
-      'div[contenteditable="true"]',
-      {
-        timeout: 60000
-      }
-    );
+    await page.waitForSelector('div[contenteditable="true"]', {
+      timeout: 60000
+    });
 
     await saveAuthState();
 
     console.log("WhatsApp authorized. Session saved.");
   } catch (err) {
-    console.log("WhatsApp not authorized. Use /qr.");
+    console.log("WhatsApp not authorized. Use /qr or /login-code.");
   }
 }
 
@@ -304,12 +250,9 @@ async function getQrScreenshotBuffer() {
   });
 
   try {
-    await page.waitForSelector(
-      "canvas",
-      {
-        timeout: 30000
-      }
-    );
+    await page.waitForSelector("canvas", {
+      timeout: 30000
+    });
 
     await page.waitForTimeout(3000);
   } catch (err) {
@@ -328,11 +271,10 @@ async function getQrScreenshotBuffer() {
     };
   }
 
-  const buffer =
-    await page.screenshot({
-      type: "png",
-      fullPage: false
-    });
+  const buffer = await page.screenshot({
+    type: "png",
+    fullPage: false
+  });
 
   return {
     authorized: false,
@@ -340,9 +282,94 @@ async function getQrScreenshotBuffer() {
   };
 }
 
+async function getLoginCodeByPhone(phone) {
+  const clean = cleanPhone(phone);
+
+  if (!clean || clean.length < 8) {
+    return {
+      ok: false,
+      error: "Bad phone"
+    };
+  }
+
+  await ensureWhatsAppPage();
+
+  await page.goto("https://web.whatsapp.com", {
+    waitUntil: "domcontentloaded"
+  });
+
+  await page.waitForTimeout(5000);
+
+  if (await isAuthorized()) {
+    await saveAuthState();
+
+    return {
+      ok: true,
+      authorized: true,
+      message: "Already authorized"
+    };
+  }
+
+  const bodyBefore = await page.locator("body").innerText().catch(() => "");
+
+  if (!bodyBefore.includes("Log in with phone number")) {
+    console.log("Login by phone button may be hidden or not loaded yet");
+  }
+
+  const loginButton = page.getByText(/Log in with phone number|Войти по номеру телефона/i);
+
+  await loginButton.click({
+    timeout: 20000
+  });
+
+  await page.waitForTimeout(3000);
+
+  const inputs = page.locator("input");
+  const inputCount = await inputs.count();
+
+  if (inputCount === 0) {
+    return {
+      ok: false,
+      error: "Phone input not found"
+    };
+  }
+
+  const phoneInput = inputs.nth(inputCount - 1);
+
+  await phoneInput.fill(clean);
+  await page.waitForTimeout(1000);
+  await page.keyboard.press("Enter");
+
+  await page.waitForTimeout(10000);
+
+  const bodyText = await page.locator("body").innerText({
+    timeout: 15000
+  });
+
+  const codeMatch =
+    bodyText.match(/[A-Z0-9]{4}-[A-Z0-9]{4}/) ||
+    bodyText.match(/[A-Z0-9]{8}/);
+
+  if (!codeMatch) {
+    return {
+      ok: false,
+      authorized: false,
+      error: "Login code not found",
+      pageText: bodyText.slice(0, 1200)
+    };
+  }
+
+  return {
+    ok: true,
+    authorized: false,
+    phone: clean,
+    code: codeMatch[0],
+    message: "Open WhatsApp on phone: Linked devices -> Link with phone number, then enter this code"
+  };
+}
+
 async function checkPhoneLastSeen(phone) {
-  const clean =
-    cleanPhone(phone);
+  const clean = cleanPhone(phone);
 
   if (!clean || clean.length < 8) {
     return {
@@ -358,8 +385,7 @@ async function checkPhoneLastSeen(phone) {
     };
   }
 
-  const url =
-    `https://web.whatsapp.com/send?phone=${clean}`;
+  const url = `https://web.whatsapp.com/send?phone=${clean}`;
 
   console.log(`Checking phone: ${clean}`);
 
@@ -369,8 +395,7 @@ async function checkPhoneLastSeen(phone) {
 
   await page.waitForTimeout(15000);
 
-  const bodyText =
-    await page.locator("body").innerText().catch(() => "");
+  const bodyText = await page.locator("body").innerText().catch(() => "");
 
   if (
     bodyText.includes("Scan to log in") ||
@@ -401,19 +426,17 @@ async function checkPhoneLastSeen(phone) {
   try {
     await page.waitForTimeout(5000);
 
-    pageText =
-      await page.locator("body").innerText({
-        timeout: 10000
-      });
+    pageText = await page.locator("body").innerText({
+      timeout: 10000
+    });
   } catch (err) {
     pageText = "";
   }
 
-  const lines =
-    pageText
-      .split("\n")
-      .map(x => x.trim())
-      .filter(Boolean);
+  const lines = pageText
+    .split("\n")
+    .map(x => x.trim())
+    .filter(Boolean);
 
   const usefulLine =
     lines.find(line =>
@@ -458,8 +481,7 @@ async function checkSheet() {
   let errors = 0;
 
   try {
-    const rows =
-      await readAccountsFromSheet();
+    const rows = await readAccountsFromSheet();
 
     for (let i = 0; i < rows.length; i++) {
       const rowNumber = i + 3;
@@ -474,16 +496,14 @@ async function checkSheet() {
 
       if (type !== "WhatsApp") continue;
 
-      const phone =
-        cleanPhone(account);
+      const phone = cleanPhone(account);
 
       if (!phone || phone.length < 8) continue;
 
       checked++;
 
       try {
-        const result =
-          await checkPhoneLastSeen(phone);
+        const result = await checkPhoneLastSeen(phone);
 
         let newStatus = "UNKNOWN";
         let lastSeenText = oldLastSeen || "";
@@ -564,8 +584,7 @@ app.get("/health", (req, res) => {
 
 app.get("/auth-status", async (req, res) => {
   try {
-    const authorized =
-      await isAuthorized();
+    const authorized = await isAuthorized();
 
     res.json({
       ok: true,
@@ -581,18 +600,10 @@ app.get("/auth-status", async (req, res) => {
 
 app.get("/qr", async (req, res) => {
   try {
-    const result =
-      await getQrScreenshotBuffer();
+    const result = await getQrScreenshotBuffer();
 
-    res.setHeader(
-      "Content-Type",
-      "image/png"
-    );
-
-    res.setHeader(
-      "X-WA-Authorized",
-      result.authorized ? "true" : "false"
-    );
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("X-WA-Authorized", result.authorized ? "true" : "false");
 
     res.end(result.buffer);
   } catch (err) {
@@ -605,11 +616,23 @@ app.get("/qr", async (req, res) => {
   }
 });
 
+app.get("/login-code", async (req, res) => {
+  try {
+    const result = await getLoginCodeByPhone(req.query.phone);
+    res.json(result);
+  } catch (err) {
+    console.log("Login code error:", err.message);
+
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
 app.get("/check", async (req, res) => {
   try {
-    const result =
-      await checkPhoneLastSeen(req.query.phone);
-
+    const result = await checkPhoneLastSeen(req.query.phone);
     res.json(result);
   } catch (err) {
     console.log("Check error:", err.message);
@@ -623,9 +646,7 @@ app.get("/check", async (req, res) => {
 
 app.get("/check-sheet", async (req, res) => {
   try {
-    const result =
-      await checkSheet();
-
+    const result = await checkSheet();
     res.json(result);
   } catch (err) {
     console.log("Check sheet error:", err.message);
@@ -639,6 +660,5 @@ app.get("/check-sheet", async (req, res) => {
 
 app.listen(PORT, async () => {
   console.log(`Server started on ${PORT}`);
-
   await startBrowser();
 });
