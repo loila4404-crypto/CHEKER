@@ -853,8 +853,7 @@ async function checkTelegramDeletedUsers() {
   const { data: users, error } = await supabase
     .from("tg_group_users")
     .select("*")
-    .eq("is_bot", false)
-    .neq("is_deleted", true);
+    .eq("is_bot", false);
 
   if (error) {
     console.log("TG checker Supabase error:", error.message);
@@ -868,35 +867,46 @@ async function checkTelegramDeletedUsers() {
 
   console.log(`TG checker started. Users: ${users.length}`);
 
-  let deleted = [];
+  const deleted = [];
 
   for (const row of users) {
+    if (!row.chat_id || !row.user_id) {
+      continue;
+    }
+
     console.log(`Checking TG user ${row.user_id}`);
 
     try {
-      const member = await bot.getChatMember(row.chat_id, row.user_id);
-      const user = member.user;
+      const member = await bot.getChatMember(
+        row.chat_id,
+        row.user_id
+      );
 
-      const isDeleted =
-        user.first_name === "Deleted Account" ||
-        user.first_name === "Удалённый аккаунт" ||
-        !user.first_name;
+      const user = member.user || {};
+
+      const firstName =
+        user.first_name || row.first_name || "";
+
+      const isDeletedAccount =
+        firstName === "Deleted Account" ||
+        firstName === "Удалённый аккаунт";
 
       const isLeftOrKicked =
         member.status === "left" ||
         member.status === "kicked";
 
       const finalDeleted =
-        isDeleted || isLeftOrKicked;
+        isDeletedAccount || isLeftOrKicked;
 
       await supabase
         .from("tg_group_users")
         .update({
-          username: user.username || null,
-          first_name: user.first_name || null,
-          last_name: user.last_name || null,
+          username: user.username || row.username || null,
+          first_name: user.first_name || row.first_name || null,
+          last_name: user.last_name || row.last_name || null,
           is_deleted: finalDeleted,
           member_status: member.status,
+          last_error: null,
           last_checked_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         })
@@ -907,15 +917,20 @@ async function checkTelegramDeletedUsers() {
           id: row.id,
           user_id: row.user_id,
           username: user.username || row.username,
-          first_name: user.first_name || row.first_name,
+          first_name: firstName || "без имени",
           status: member.status
         });
       }
 
-      await new Promise(resolve => setTimeout(resolve, 700));
+      await new Promise(resolve =>
+        setTimeout(resolve, 700)
+      );
 
     } catch (e) {
-      console.log(`TG check error ${row.user_id}:`, e.message);
+      console.log(
+        `TG check error ${row.user_id}:`,
+        e.message
+      );
 
       await supabase
         .from("tg_group_users")
@@ -932,14 +947,16 @@ async function checkTelegramDeletedUsers() {
   if (deleted.length) {
     console.log(`Deleted users found: ${deleted.length}`);
 
-    const text = deleted.map(u => {
-      const name =
-        u.username
-          ? `@${u.username}`
-          : u.first_name || "без username";
+    const text = deleted
+      .map(u => {
+        const name =
+          u.username
+            ? `@${u.username}`
+            : u.first_name || "без username";
 
-      return `⛔ ${name} | ID: ${u.user_id} | ${u.status}`;
-    }).join("\n");
+        return `⛔ ${name} | ID: ${u.user_id} | ${u.status}`;
+      })
+      .join("\n");
 
     await bot.sendMessage(
       REPORT_CHAT_ID,
@@ -947,17 +964,6 @@ async function checkTelegramDeletedUsers() {
 
 ${text}`
     );
-
-    for (const u of deleted) {
-      await supabase
-        .from("tg_group_users")
-        .update({
-          is_deleted: true,
-          member_status: u.status,
-          updated_at: new Date().toISOString()
-        })
-        .eq("id", u.id);
-    }
   } else {
     console.log("TG checker finished. No deleted users.");
   }
@@ -973,6 +979,8 @@ function esc(text) {
 async function sendHourlyReport() {
   try {
     console.log("WA/TG report started");
+
+    await checkTelegramDeletedUsers();
 
     await syncWhatsAppSheetWithSupabase({
       supabase
@@ -1073,20 +1081,17 @@ async function sendHourlyReport() {
         )
       );
 
-    const tgConnected = tgList
-      .filter(user =>
-        user.member_status !== "left" &&
-        user.member_status !== "kicked" &&
-        user.member_status !== "check_error" &&
-        user.is_deleted !== true
-      );
-
     const tgProblem = tgList
       .filter(user =>
+        user.is_deleted === true ||
         user.member_status === "left" ||
         user.member_status === "kicked" ||
-        user.member_status === "check_error" ||
-        user.is_deleted === true
+        user.member_status === "check_error"
+      );
+
+    const tgConnected = tgList
+      .filter(user =>
+        !tgProblem.includes(user)
       );
 
     const waProblemText = waProblem.length
@@ -1107,7 +1112,9 @@ async function sendHourlyReport() {
             ? `@${esc(user.username)}`
             : esc(user.first_name || "без username");
 
-          const status = user.member_status || "deleted";
+          const status =
+            user.member_status ||
+            (user.is_deleted ? "deleted" : "unknown");
 
           return `• ${username} | ID: <code>${esc(user.user_id)}</code> — <b>${esc(status)}</b>`;
         }).join("\n")
