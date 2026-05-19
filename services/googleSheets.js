@@ -125,7 +125,7 @@ function clearReadCache() {
 
 async function readAccountsFromSheet() {
   const range =
-    `${process.env.GOOGLE_SHEET_NAME}!A3:F1000`;
+    `${process.env.GOOGLE_SHEET_NAME}!A3:G1000`;
 
   return cachedRead(
     `read:${range}`,
@@ -147,7 +147,7 @@ async function updateSheetRow(rowNumber, values) {
   clearReadCache();
 
   const range =
-    `${process.env.GOOGLE_SHEET_NAME}!A${rowNumber}:F${rowNumber}`;
+    `${process.env.GOOGLE_SHEET_NAME}!A${rowNumber}:G${rowNumber}`;
 
   return queuedWrite(
     async () => {
@@ -170,7 +170,7 @@ async function appendSheetRow(values) {
   clearReadCache();
 
   const range =
-    `${process.env.GOOGLE_SHEET_NAME}!A:F`;
+    `${process.env.GOOGLE_SHEET_NAME}!A:G`;
 
   return queuedWrite(
     async () => {
@@ -237,6 +237,7 @@ async function clearWhatsAppSheetRow(rowNumber) {
   return updateSheetRow(rowNumber, [
     "",
     "WhatsApp",
+    "",
     "",
     "",
     "",
