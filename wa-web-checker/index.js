@@ -37,7 +37,6 @@ const AUTH_PATH =
     AUTH_DIR,
     AUTH_FILE
   );
-const PORT = process.env.PORT || 3000;
 
 let browser = null;
 let context = null;
