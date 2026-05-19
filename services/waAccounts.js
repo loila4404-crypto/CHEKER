@@ -30,8 +30,7 @@ async function saveStatus({
 }
 
 function normalizePhone(value) {
-  return String(value || "")
-    .replace(/[^\d]/g, "");
+  return String(value || "").replace(/[^\d]/g, "");
 }
 
 function normalizeUsername(value) {
@@ -47,22 +46,75 @@ function normalizeStatus(value) {
     .toUpperCase();
 }
 
-function getSheetStatusByWaStatus(status) {
-  const normalized = String(status || "")
+function getKyivNow() {
+  return new Date(
+    new Date().toLocaleString("en-US", {
+      timeZone: "Europe/Kyiv"
+    })
+  );
+}
+
+function parseWaLastSeen(lastSeen) {
+  const text = String(lastSeen || "")
     .trim()
     .toLowerCase();
 
+  if (!text) return null;
+
+  if (text === "в сети" || text === "online") {
+    return getKyivNow();
+  }
+
+  const timeMatch = text.match(/(\d{1,2}):(\d{2})/);
+
+  if (!timeMatch) return null;
+
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+
+  const now = getKyivNow();
+  const date = new Date(now);
+
   if (
-    [
-      "connected",
-      "active",
-      "open"
-    ].includes(normalized)
+    text.includes("вчера") ||
+    text.includes("yesterday")
   ) {
+    date.setDate(date.getDate() - 1);
+  }
+
+  date.setHours(hours, minutes, 0, 0);
+
+  return date;
+}
+
+function getWaStatusByLastSeen(lastSeen) {
+  const text = String(lastSeen || "")
+    .trim()
+    .toLowerCase();
+
+  if (!text) return "UNKNOWN";
+
+  if (text === "в сети" || text === "online") {
     return "ACTIVE";
   }
 
-  return "CONNECTION";
+  const lastSeenDate = parseWaLastSeen(lastSeen);
+
+  if (!lastSeenDate) return "UNKNOWN";
+
+  const now = getKyivNow();
+
+  const diffHours =
+    (now.getTime() - lastSeenDate.getTime()) /
+    1000 /
+    60 /
+    60;
+
+  if (diffHours > 3) {
+    return "BAN";
+  }
+
+  return "ACTIVE";
 }
 
 async function syncWhatsAppSheetWithSupabase({
@@ -72,32 +124,6 @@ async function syncWhatsAppSheetWithSupabase({
     console.log("WA sheet sync started");
 
     const rows = await readAccountsFromSheet();
-
-    const { data: waAccounts, error } = await supabase
-      .from("wa_accounts")
-      .select("phone,status");
-
-    if (error) {
-      console.log(
-        "WA sync Supabase error:",
-        error.message
-      );
-
-      return;
-    }
-
-    const statusByPhone = new Map();
-
-    for (const acc of waAccounts || []) {
-      const phone = normalizePhone(acc.phone);
-
-      if (!phone || phone.length < 8) continue;
-
-      statusByPhone.set(
-        phone,
-        getSheetStatusByWaStatus(acc.status)
-      );
-    }
 
     let updated = 0;
     let checked = 0;
@@ -109,8 +135,9 @@ async function syncWhatsAppSheetWithSupabase({
       const type = rows[i][1] || "";
       const account = rows[i][2] || "";
       const sheetStatus = rows[i][3] || "";
-      const adName = rows[i][4] || "";
-      const operator = rows[i][5] || "";
+      const lastSeen = rows[i][4] || "";
+      const adName = rows[i][5] || "";
+      const operator = rows[i][6] || "";
 
       const sheetType = String(type || "")
         .trim()
@@ -124,7 +151,7 @@ async function syncWhatsAppSheetWithSupabase({
       checked++;
 
       const newStatus =
-        statusByPhone.get(sheetPhone) || "CONNECTION";
+        getWaStatusByLastSeen(lastSeen);
 
       if (normalizeStatus(sheetStatus) === newStatus) {
         continue;
@@ -135,6 +162,7 @@ async function syncWhatsAppSheetWithSupabase({
         "WhatsApp",
         account,
         newStatus,
+        lastSeen,
         adName,
         operator
       ]);
@@ -142,7 +170,7 @@ async function syncWhatsAppSheetWithSupabase({
       updated++;
 
       console.log(
-        `WA sheet synced: row ${rowNumber}, ${sheetPhone} -> ${newStatus}`
+        `WA sheet synced: row ${rowNumber}, ${sheetPhone} -> ${newStatus}, lastSeen=${lastSeen || "-"}`
       );
     }
 
@@ -226,7 +254,7 @@ async function syncTelegramSheetWithSupabase({
 
       await updateTelegramSheetRow(rowNumber, [
         id,
-        type || "Telegram",
+        type || "Telegramm",
         account,
         newStatus,
         adName,
