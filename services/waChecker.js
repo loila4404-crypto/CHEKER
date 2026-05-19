@@ -36,7 +36,7 @@ async function startWaChecker({
   const sessionName = `wa_checker_${phone}`;
 
   await restoreSessionFromStorage({
-    phone: `checker_${phone}`,
+    phone: `wa_checker_${phone}`,
     supabase,
     sessionSecret: SESSION_SECRET,
     bucket: SESSION_BUCKET
