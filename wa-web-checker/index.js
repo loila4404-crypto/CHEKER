@@ -2,10 +2,41 @@ require("dotenv").config();
 
 const express = require("express");
 const fs = require("fs");
+const path = require("path");
+
 const { google } = require("googleapis");
 const { chromium } = require("playwright");
 
+const {
+  createClient
+} = require("@supabase/supabase-js");
+
 const app = express();
+
+const PORT =
+  process.env.PORT || 3000;
+
+const supabase =
+  createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+  );
+
+const AUTH_BUCKET =
+  process.env.AUTH_BUCKET ||
+  "wa-web-auth";
+
+const AUTH_FILE =
+  "state.json";
+
+const AUTH_DIR =
+  path.join(__dirname, "auth");
+
+const AUTH_PATH =
+  path.join(
+    AUTH_DIR,
+    AUTH_FILE
+  );
 const PORT = process.env.PORT || 3000;
 
 let browser = null;
@@ -13,6 +44,101 @@ let context = null;
 let page = null;
 let sheetsClient = null;
 let checkSheetRunning = false;
+
+async function downloadAuthFromSupabase() {
+  try {
+    if (!fs.existsSync(AUTH_DIR)) {
+      fs.mkdirSync(AUTH_DIR, {
+        recursive: true
+      });
+    }
+
+    const {
+      data,
+      error
+    } = await supabase.storage
+      .from(AUTH_BUCKET)
+      .download(AUTH_FILE);
+
+    if (error || !data) {
+      console.log(
+        "No auth in Supabase"
+      );
+
+      return false;
+    }
+
+    const buffer =
+      Buffer.from(
+        await data.arrayBuffer()
+      );
+
+    fs.writeFileSync(
+      AUTH_PATH,
+      buffer
+    );
+
+    console.log(
+      "Auth downloaded from Supabase"
+    );
+
+    return true;
+  } catch (err) {
+    console.log(
+      "downloadAuth error:",
+      err.message
+    );
+
+    return false;
+  }
+}
+
+async function uploadAuthToSupabase() {
+  try {
+    if (!fs.existsSync(AUTH_PATH)) {
+      return false;
+    }
+
+    const fileBuffer =
+      fs.readFileSync(AUTH_PATH);
+
+    const {
+      error
+    } = await supabase.storage
+      .from(AUTH_BUCKET)
+      .upload(
+        AUTH_FILE,
+        fileBuffer,
+        {
+          upsert: true,
+          contentType:
+            "application/json"
+        }
+      );
+
+    if (error) {
+      console.log(
+        "uploadAuth error:",
+        error.message
+      );
+
+      return false;
+    }
+
+    console.log(
+      "Auth uploaded to Supabase"
+    );
+
+    return true;
+  } catch (err) {
+    console.log(
+      "uploadAuth crash:",
+      err.message
+    );
+
+    return false;
+  }
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -83,8 +209,10 @@ async function updateSheetRow(rowNumber, values) {
 async function startBrowser() {
   console.log("Starting browser...");
 
+  await downloadAuthFromSupabase();
+
   browser = await chromium.launch({
-    headless: false,
+    headless: true,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox"
@@ -116,6 +244,7 @@ async function startBrowser() {
     });
 
     console.log("WhatsApp authorized. Session saved.");
+    await uploadAuthToSupabase();
   } catch (err) {
     console.log("WhatsApp not authorized. Scan QR manually.");
   }
