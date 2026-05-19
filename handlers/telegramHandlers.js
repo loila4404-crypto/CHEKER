@@ -284,7 +284,7 @@ function registerTelegramHandlers({
       );
 
       await startWaChecker({
-        phone: "checker",
+        phone: "380998338356",
         chatId: chat.id,
         bot,
         supabase,
