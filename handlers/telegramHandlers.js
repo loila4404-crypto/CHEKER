@@ -23,6 +23,7 @@ function registerTelegramHandlers({
   getAccountsStatusText,
 
   startWhatsApp,
+  startWaChecker,
   activeSessions,
   scheduleSessionUpload,
   saveStatus
@@ -141,332 +142,351 @@ function registerTelegramHandlers({
     await sendAdminMenu(msg.chat.id);
   });
 
-bot.on("message", async (msg) => {
-  const chat = msg.chat;
-  const user = msg.from;
-  const text = msg.text;
+  bot.on("message", async (msg) => {
+    const chat = msg.chat;
+    const user = msg.from;
+    const text = msg.text;
 
-  if (!chat) return;
-  if (!user) return;
+    if (!chat) return;
+    if (!user) return;
 
-  if (
-    (chat.type === "group" || chat.type === "supergroup") &&
-    msg.new_chat_members &&
-    msg.new_chat_members.length
-  ) {
-    for (const newUser of msg.new_chat_members) {
-      await markTelegramActiveByUsername(newUser.username);
-    }
+    if (
+      (chat.type === "group" || chat.type === "supergroup") &&
+      msg.new_chat_members &&
+      msg.new_chat_members.length
+    ) {
+      for (const newUser of msg.new_chat_members) {
+        await markTelegramActiveByUsername(newUser.username);
+      }
 
-    await bot.sendMessage(
-      chat.id,
-      `👋 Добро пожаловать.
+      await bot.sendMessage(
+        chat.id,
+        `👋 Добро пожаловать.
 
 Нажми кнопку ниже, чтобы пройти проверку.`,
-      {
-        reply_markup: {
-          keyboard: [
-            ["➕ Провериться"]
-          ],
-          resize_keyboard: true
+        {
+          reply_markup: {
+            keyboard: [
+              ["➕ Провериться"]
+            ],
+            resize_keyboard: true
+          }
         }
+      );
+
+      return;
+    }
+
+    if (chat.type === "group" || chat.type === "supergroup") {
+      await markTelegramActiveByUsername(user.username);
+
+      if (text === "➕ Провериться") {
+        await bot.sendMessage(
+          chat.id,
+          `➕ ${user.first_name || "User"}`
+        );
       }
-    );
 
-    return;
-  }
-
-  if (chat.type === "group" || chat.type === "supergroup") {
-    await markTelegramActiveByUsername(user.username);
-
-    if (text === "➕ Провериться") {
-      await bot.sendMessage(
-        chat.id,
-        `➕ ${user.first_name || "User"}`
-      );
-    }
-
-    return;
-  }
-
-  if (!text) return;
-  if (text === "/start") return;
-
-  if (text === "➕ Подключить WhatsApp") {
-    const state = clientWaState.get(user.id);
-
-    if (!state || !state.token) {
-      await bot.sendMessage(
-        chat.id,
-        "❌ Ссылка подключения не найдена. Открой ссылку заново."
-      );
       return;
     }
 
-    const { data: link } = await supabase
-      .from("wa_connect_links")
-      .select("*")
-      .eq("token", state.token)
-      .eq("active", true)
-      .single();
+    if (!text) return;
+    if (text === "/start") return;
 
-    if (!link) {
+    if (text === "➕ Подключить WhatsApp") {
+      const state = clientWaState.get(user.id);
+
+      if (!state || !state.token) {
+        await bot.sendMessage(
+          chat.id,
+          "❌ Ссылка подключения не найдена. Открой ссылку заново."
+        );
+        return;
+      }
+
+      const { data: link } = await supabase
+        .from("wa_connect_links")
+        .select("*")
+        .eq("token", state.token)
+        .eq("active", true)
+        .single();
+
+      if (!link) {
+        await bot.sendMessage(
+          chat.id,
+          "❌ Ссылка недействительна или отключена."
+        );
+        return;
+      }
+
       await bot.sendMessage(
         chat.id,
-        "❌ Ссылка недействительна или отключена."
+        "📱 Отправь номер WhatsApp в формате 380991112233"
       );
+
+      clientWaState.set(user.id, {
+        step: "wait_phone",
+        token: state.token
+      });
+
       return;
     }
 
-    await bot.sendMessage(
-      chat.id,
-      "📱 Отправь номер WhatsApp в формате 380991112233"
-    );
+    const waState = clientWaState.get(user.id);
 
-    clientWaState.set(user.id, {
-      step: "wait_phone",
-      token: state.token
-    });
+    if (waState && waState.step === "wait_phone") {
+      const phone = String(text).replace(/[^\d]/g, "");
 
-    return;
-  }
+      if (!phone || phone.length < 8) {
+        await bot.sendMessage(
+          chat.id,
+          "❌ Неверный номер. Отправь номер цифрами."
+        );
+        return;
+      }
 
-  const waState = clientWaState.get(user.id);
+      clientWaState.delete(user.id);
 
-  if (waState && waState.step === "wait_phone") {
-    const phone = String(text).replace(/[^\d]/g, "");
-
-    if (!phone || phone.length < 8) {
       await bot.sendMessage(
         chat.id,
-        "❌ Неверный номер. Отправь номер цифрами."
+        `⏳ Запускаю WhatsApp ${phone}, жди QR...`
       );
+
+      await startWhatsApp({
+        phone,
+        chatId: chat.id,
+        bot,
+        supabase,
+        SESSION_SECRET: process.env.SESSION_SECRET,
+        SESSION_BUCKET: "wa-sessions",
+        activeSessions,
+        deletingWaPhones,
+        scheduleSessionUpload,
+        saveStatus,
+        markSheetBanAndReport
+      });
+
       return;
     }
 
-    clientWaState.delete(user.id);
+    if (!(await isAdmin({
+      userId: user.id,
+      adminId: ADMIN_ID,
+      supabase
+    }))) {
+      return;
+    }
 
-    await bot.sendMessage(
-      chat.id,
-      `⏳ Запускаю WhatsApp ${phone}, жди QR...`
-    );
+    if (text === "🟢 WA Проверяльщик") {
+      await bot.sendMessage(
+        chat.id,
+        "⏳ Запускаю WA Проверяльщик. Сейчас должен прийти QR для служебной сессии."
+      );
 
-    await startWhatsApp({
-     phone,
-     chatId: chat.id,
-     bot,
-     supabase,
-     SESSION_SECRET: process.env.SESSION_SECRET,
-     SESSION_BUCKET: "wa-sessions",
-     activeSessions,
-     deletingWaPhones,
-     scheduleSessionUpload,
-     saveStatus,
-     markSheetBanAndReport
- });
+      await startWaChecker({
+        phone: "checker",
+        chatId: chat.id,
+        bot,
+        supabase,
+        SESSION_SECRET: process.env.SESSION_SECRET,
+        SESSION_BUCKET: "wa-sessions",
+        scheduleSessionUpload
+      });
 
-    return;
-  }
+      return;
+    }
 
-  if (!(await isAdmin({
-    userId: user.id,
-    adminId: ADMIN_ID,
-    supabase
-  }))) {
-    return;
-  }
+    if (text === "🗑 Удалить") {
+      waitingForDelete.add(user.id);
 
-  if (text === "🗑 Удалить") {
-    waitingForDelete.add(user.id);
-
-    await bot.sendMessage(
-      chat.id,
-      `Отправь номер WhatsApp или Telegram username.
+      await bot.sendMessage(
+        chat.id,
+        `Отправь номер WhatsApp или Telegram username.
 
 Пример:
 380991112233
 
 или:
 @username`
-    );
+      );
 
-    return;
-  }
-
-  if (waitingForDelete.has(user.id)) {
-    waitingForDelete.delete(user.id);
-
-    await deleteAccountFromSystem(
-      text,
-      chat.id
-    );
-
-    return;
-  }
-
-  if (text === "⏱ Интервал") {
-    await bot.sendMessage(
-      chat.id,
-      `Выбери интервал проверки:`,
-      {
-        reply_markup: {
-          keyboard: [
-            ["15 минут"],
-            ["30 минут"],
-            ["1 час"],
-            ["3 часа"],
-            ["Назад"]
-          ],
-          resize_keyboard: true
-        }
-      }
-    );
-
-    return;
-  }
-
-  if (
-    text === "15 минут" ||
-    text === "30 минут" ||
-    text === "1 час" ||
-    text === "3 часа"
-  ) {
-    if (text === "15 минут") {
-      setWaSheetIntervalMs(15 * 60 * 1000);
+      return;
     }
 
-    if (text === "30 минут") {
-      setWaSheetIntervalMs(30 * 60 * 1000);
+    if (waitingForDelete.has(user.id)) {
+      waitingForDelete.delete(user.id);
+
+      await deleteAccountFromSystem(
+        text,
+        chat.id
+      );
+
+      return;
     }
 
-    if (text === "1 час") {
-      setWaSheetIntervalMs(60 * 60 * 1000);
-    }
-
-    if (text === "3 часа") {
-      setWaSheetIntervalMs(3 * 60 * 60 * 1000);
-    }
-
-    startWaSheetAutoImportInterval();
-
-    await bot.sendMessage(
-      chat.id,
-      `✅ Интервал установлен: ${text}`
-    );
-
-    return;
-  }
-
-  if (text === "Назад") {
-    await sendAdminMenu(chat.id);
-    return;
-  }
-
-  if (text === "🔵 Telegram") {
-    try {
-      const invite = await bot.createChatInviteLink(
-        process.env.CHECKER_GROUP_ID,
+    if (text === "⏱ Интервал") {
+      await bot.sendMessage(
+        chat.id,
+        `Выбери интервал проверки:`,
         {
-          member_limit: 0,
-          creates_join_request: false
+          reply_markup: {
+            keyboard: [
+              ["15 минут"],
+              ["30 минут"],
+              ["1 час"],
+              ["3 часа"],
+              ["Назад"]
+            ],
+            resize_keyboard: true
+          }
         }
       );
 
+      return;
+    }
+
+    if (
+      text === "15 минут" ||
+      text === "30 минут" ||
+      text === "1 час" ||
+      text === "3 часа"
+    ) {
+      if (text === "15 минут") {
+        setWaSheetIntervalMs(15 * 60 * 1000);
+      }
+
+      if (text === "30 минут") {
+        setWaSheetIntervalMs(30 * 60 * 1000);
+      }
+
+      if (text === "1 час") {
+        setWaSheetIntervalMs(60 * 60 * 1000);
+      }
+
+      if (text === "3 часа") {
+        setWaSheetIntervalMs(3 * 60 * 60 * 1000);
+      }
+
+      startWaSheetAutoImportInterval();
+
       await bot.sendMessage(
         chat.id,
-        `🔵 Ссылка для подключения Telegram:
+        `✅ Интервал установлен: ${text}`
+      );
+
+      return;
+    }
+
+    if (text === "Назад") {
+      await sendAdminMenu(chat.id);
+      return;
+    }
+
+    if (text === "🔵 Telegram") {
+      try {
+        const invite = await bot.createChatInviteLink(
+          process.env.CHECKER_GROUP_ID,
+          {
+            member_limit: 0,
+            creates_join_request: false
+          }
+        );
+
+        await bot.sendMessage(
+          chat.id,
+          `🔵 Ссылка для подключения Telegram:
 
 ${invite.invite_link}
 
 Отправь её человеку.
 После входа в группу и нажатия ➕ Провериться аккаунт активируется автоматически.`
-      );
-    } catch (err) {
-      console.log(
-        "Telegram invite error:",
-        err.message
-      );
+        );
+      } catch (err) {
+        console.log(
+          "Telegram invite error:",
+          err.message
+        );
+
+        await bot.sendMessage(
+          chat.id,
+          `❌ Ошибка создания ссылки: ${err.message}`
+        );
+      }
+
+      return;
+    }
+
+    if (text === "🔗 WhatsApp") {
+      const token = makeToken();
+
+      await supabase
+        .from("wa_connect_links")
+        .insert({
+          token,
+          created_by: String(user.id),
+          active: true
+        });
+
+      const me = await bot.getMe();
 
       await bot.sendMessage(
         chat.id,
-        `❌ Ошибка создания ссылки: ${err.message}`
-      );
-    }
-
-    return;
-  }
-
-  if (text === "🔗 WhatsApp") {
-    const token = makeToken();
-
-    await supabase
-      .from("wa_connect_links")
-      .insert({
-        token,
-        created_by: String(user.id),
-        active: true
-      });
-
-    const me = await bot.getMe();
-
-    await bot.sendMessage(
-      chat.id,
-      `🔗 Ссылка для подключения WhatsApp:
+        `🔗 Ссылка для подключения WhatsApp:
 
 https://t.me/${me.username}?start=wa_${token}`
-    );
-
-    return;
-  }
-
-  if (text === "🔐 Доступ") {
-    const token = makeToken();
-
-    await supabase
-      .from("admin_links")
-      .insert({
-        token,
-        created_by: String(user.id),
-        active: true
-      });
-
-    const me = await bot.getMe();
-
-    await bot.sendMessage(
-      chat.id,
-      `🔐 Ссылка доступа:
-
-https://t.me/${me.username}?start=admin_${token}`
-    );
-
-    return;
-  }
-
-  if (text === "📊 Статус") {
-    try {
-      const statusText = await getAccountsStatusText();
-
-      await bot.sendMessage(
-        chat.id,
-        statusText,
-        {
-          parse_mode: "HTML"
-        }
       );
-    } catch (err) {
-      console.log("Status button error:", err);
 
-      await bot.sendMessage(
-        chat.id,
-        `❌ Ошибка статуса: ${err.message}`
-      );
+      return;
     }
 
-    return;
-  }
-});
+    if (text === "🔐 Доступ") {
+      const token = makeToken();
 
-    async function sendAdminMenu(chatId) {
+      await supabase
+        .from("admin_links")
+        .insert({
+          token,
+          created_by: String(user.id),
+          active: true
+        });
+
+      const me = await bot.getMe();
+
+      await bot.sendMessage(
+        chat.id,
+        `🔐 Ссылка доступа:
+
+https://t.me/${me.username}?start=admin_${token}`
+      );
+
+      return;
+    }
+
+    if (text === "📊 Статус") {
+      try {
+        const statusText = await getAccountsStatusText();
+
+        await bot.sendMessage(
+          chat.id,
+          statusText,
+          {
+            parse_mode: "HTML"
+          }
+        );
+      } catch (err) {
+        console.log("Status button error:", err);
+
+        await bot.sendMessage(
+          chat.id,
+          `❌ Ошибка статуса: ${err.message}`
+        );
+      }
+
+      return;
+    }
+  });
+
+  async function sendAdminMenu(chatId) {
     await bot.sendMessage(
       chatId,
       `👋 WA Checker готов`,
@@ -476,6 +496,9 @@ https://t.me/${me.username}?start=admin_${token}`
             [
               "📊 Статус",
               "🗑 Удалить"
+            ],
+            [
+              "🟢 WA Проверяльщик"
             ],
             [
               "🔗 WhatsApp",
