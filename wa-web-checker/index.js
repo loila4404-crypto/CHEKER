@@ -317,10 +317,11 @@ async function getLoginCodeByPhone(phone) {
   await ensureWhatsAppPage();
 
   await page.goto("https://web.whatsapp.com", {
-    waitUntil: "domcontentloaded"
+    waitUntil: "domcontentloaded",
+    timeout: 120000
   });
 
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(10000);
 
   if (await isAuthorized()) {
     await saveAuthState();
@@ -335,13 +336,19 @@ async function getLoginCodeByPhone(phone) {
   const loginButton =
     page.getByText(
       /Log in with phone number|Войти по номеру телефона/i
-    );
+    ).last();
 
-  await loginButton.click({
-    timeout: 20000
+  await loginButton.waitFor({
+    state: "visible",
+    timeout: 60000
   });
 
-  await page.waitForTimeout(3000);
+  await loginButton.click({
+    timeout: 60000,
+    force: true
+  });
+
+  await page.waitForTimeout(7000);
 
   const phoneInput =
     page.locator(
@@ -350,7 +357,7 @@ async function getLoginCodeByPhone(phone) {
 
   await phoneInput.waitFor({
     state: "visible",
-    timeout: 20000
+    timeout: 60000
   });
 
   const localPhone =
@@ -360,15 +367,15 @@ async function getLoginCodeByPhone(phone) {
 
   await phoneInput.fill(localPhone);
 
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(2000);
 
   await page.keyboard.press("Enter");
 
-  await page.waitForTimeout(10000);
+  await page.waitForTimeout(15000);
 
   const bodyText =
     await page.locator("body").innerText({
-      timeout: 15000
+      timeout: 30000
     });
 
   const directCodeMatch =
@@ -401,13 +408,9 @@ async function getLoginCodeByPhone(phone) {
 
     if (codeChars.length === 8) {
       code =
-        codeChars
-          .slice(0, 4)
-          .join("") +
+        codeChars.slice(0, 4).join("") +
         "-" +
-        codeChars
-          .slice(4)
-          .join("");
+        codeChars.slice(4).join("");
     }
   }
 
