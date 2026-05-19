@@ -320,13 +320,26 @@ async function getLoginCodeByPhone(phone) {
     };
   }
 
-  const bodyBefore = await page.locator("body").innerText().catch(() => "");
+  const bodyBefore =
+    await page
+      .locator("body")
+      .innerText()
+      .catch(() => "");
 
-  if (!bodyBefore.includes("Log in with phone number")) {
-    console.log("Login by phone button may be hidden or not loaded yet");
+  if (
+    !bodyBefore.includes(
+      "Log in with phone number"
+    )
+  ) {
+    console.log(
+      "Login by phone button may be hidden or not loaded yet"
+    );
   }
 
-  const loginButton = page.getByText(/Log in with phone number|Войти по номеру телефона/i);
+  const loginButton =
+    page.getByText(
+      /Log in with phone number|Войти по номеру телефона/i
+    );
 
   await loginButton.click({
     timeout: 20000
@@ -334,31 +347,36 @@ async function getLoginCodeByPhone(phone) {
 
   await page.waitForTimeout(3000);
 
-  const inputs = page.locator("input");
-  const inputCount = await inputs.count();
+  const phoneInput =
+    page.locator(
+      'input[type="text"], input[type="tel"]'
+    ).last();
 
-  if (inputCount === 0) {
-    return {
-      ok: false,
-      error: "Phone input not found"
-    };
-  }
-
-  const phoneInput = inputs.nth(inputCount - 1);
+  await phoneInput.waitFor({
+    state: "visible",
+    timeout: 20000
+  });
 
   await phoneInput.fill(clean);
+
   await page.waitForTimeout(1000);
+
   await page.keyboard.press("Enter");
 
   await page.waitForTimeout(10000);
 
-  const bodyText = await page.locator("body").innerText({
-    timeout: 15000
-  });
+  const bodyText =
+    await page.locator("body").innerText({
+      timeout: 15000
+    });
 
   const codeMatch =
-    bodyText.match(/[A-Z0-9]{4}-[A-Z0-9]{4}/) ||
-    bodyText.match(/[A-Z0-9]{8}/);
+    bodyText.match(
+      /[A-Z0-9]{4}-[A-Z0-9]{4}/
+    ) ||
+    bodyText.match(
+      /[A-Z0-9]{8}/
+    );
 
   if (!codeMatch) {
     return {
@@ -374,7 +392,8 @@ async function getLoginCodeByPhone(phone) {
     authorized: false,
     phone: clean,
     code: codeMatch[0],
-    message: "Open WhatsApp on phone: Linked devices -> Link with phone number, then enter this code"
+    message:
+      "Open WhatsApp on phone: Linked devices -> Link with phone number, then enter this code"
   };
 }
 
