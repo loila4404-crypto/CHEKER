@@ -57,7 +57,7 @@ async function startWaChecker({
     await saveCreds();
 
     if (typeof scheduleSessionUpload === "function") {
-      scheduleSessionUpload(`checker_${phone}`);
+      scheduleSessionUpload(`wa_checker_${phone}`);
     }
   });
 
