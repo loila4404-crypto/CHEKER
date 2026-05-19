@@ -24,12 +24,13 @@ function registerTelegramHandlers({
 
   startWhatsApp,
   startWaChecker,
+  checkWhatsAppLastSeenFromSheet,
   activeSessions,
   scheduleSessionUpload,
   saveStatus
 }) {
   console.log("Telegram handlers registered");
-
+  const waitingForWaWebLogin = new Set();
   bot.onText(/\/start(?: (.+))?/, async (msg, match) => {
     console.log("START received", msg.from.id);
 
@@ -277,10 +278,88 @@ function registerTelegramHandlers({
       return;
     }
 
+    if (text === "🔐 WA Web Login") {
+  waitingForWaWebLogin.add(user.id);
+
+  await bot.sendMessage(
+    chat.id,
+    "📱 Отправь номер WhatsApp для WA Web авторизации\n\nПример:\n380998338356"
+  );
+
+  return;
+}
+
+if (waitingForWaWebLogin.has(user.id)) {
+  waitingForWaWebLogin.delete(user.id);
+
+  const phone =
+    String(text).replace(/[^\d]/g, "");
+
+  if (!phone || phone.length < 8) {
+    await bot.sendMessage(
+      chat.id,
+      "❌ Неверный номер."
+    );
+
+    return;
+  }
+
+  try {
+    await bot.sendMessage(
+      chat.id,
+      "⏳ Получаю код авторизации..."
+    );
+
+    const response =
+      await fetch(
+        `${process.env.WA_WEB_CHECKER_URL}/login-code?phone=${phone}`
+      );
+
+    const data =
+      await response.json();
+
+    if (!data.ok) {
+      await bot.sendMessage(
+        chat.id,
+        `❌ Ошибка:\n${data.error || "Unknown"}`
+      );
+
+      return;
+    }
+
+    if (data.authorized) {
+      await bot.sendMessage(
+        chat.id,
+        "✅ WA Web уже авторизован."
+      );
+
+      return;
+    }
+
+    await bot.sendMessage(
+      chat.id,
+      `🔑 Код WA Web:\n\n${data.code}\n\nWhatsApp → Связанные устройства → Связать по номеру телефона`
+    );
+
+  } catch (err) {
+    console.log(
+      "WA WEB LOGIN ERROR:",
+      err.message
+    );
+
+    await bot.sendMessage(
+      chat.id,
+      `❌ Ошибка:\n${err.message}`
+    );
+  }
+
+  return;
+}
+
     if (text === "🟢 WA Проверяльщик") {
       await bot.sendMessage(
         chat.id,
-        "⏳ Запускаю WA Проверяльщик. Сейчас должен прийти QR для служебной сессии."
+        "⏳ Запускаю WA Проверяльщик."
       );
 
       await startWaChecker({
@@ -291,6 +370,17 @@ function registerTelegramHandlers({
         SESSION_SECRET: process.env.SESSION_SECRET,
         SESSION_BUCKET: "wa-sessions",
         scheduleSessionUpload
+      });
+
+      return;
+    }
+
+    if (text === "🔍 Проверить WA из таблицы") {
+      console.log("WA SHEET CHECK BUTTON PRESSED");
+
+      await checkWhatsAppLastSeenFromSheet({
+        bot,
+        chatId: chat.id
       });
 
       return;
@@ -498,7 +588,11 @@ https://t.me/${me.username}?start=admin_${token}`
               "🗑 Удалить"
             ],
             [
-              "🟢 WA Проверяльщик"
+              "🟢 WA Проверяльщик",
+              "🔐 WA Web Login"
+            ],
+            [
+              "🔍 Проверить WA из таблицы"
             ],
             [
               "🔗 WhatsApp",
