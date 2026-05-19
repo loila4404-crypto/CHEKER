@@ -303,7 +303,7 @@ async function getQrScreenshotBuffer() {
     waitUntil: "domcontentloaded"
   });
 
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(15000);
 
   if (await isAuthorized()) {
     await saveAuthState();
