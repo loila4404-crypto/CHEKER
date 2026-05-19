@@ -107,31 +107,50 @@ async function isAuthorized() {
   if (!page) return false;
 
   try {
-    const bodyText =
-      await page.locator("body").innerText({
-        timeout: 5000
-      });
+    const bodyText = await page.locator("body").innerText({
+      timeout: 10000
+    });
 
-    if (
-      bodyText.includes("Scan to log in") ||
-      bodyText.includes("Отсканируйте, чтобы войти") ||
-      bodyText.includes("Log in with phone number") ||
-      bodyText.includes("Войти по номеру телефона")
-    ) {
-      return false;
+    const authorizedMarkers = [
+      "All",
+      "Unread",
+      "Favorites",
+      "Groups",
+      "No chats",
+      "Send document",
+      "Add contact",
+
+      "Все",
+      "Непрочитанное",
+      "Избранное",
+      "Уведомления выключены",
+      "Нет чатов",
+      "Отправить документ",
+      "Добавить контакт"
+    ];
+
+    for (const marker of authorizedMarkers) {
+      if (bodyText.includes(marker)) {
+        return true;
+      }
     }
 
-    const hasSidebar =
-      await page
-        .locator('[data-testid="chat-list"]')
-        .count();
+    const loginMarkers = [
+      "Scan to log in",
+      "Log in with phone number",
+      "Enter phone number",
+      "Отсканируйте",
+      "Войти по номеру телефона",
+      "Введите номер телефона"
+    ];
 
-    const hasSearch =
-      await page
-        .locator('[contenteditable="true"]')
-        .count();
+    for (const marker of loginMarkers) {
+      if (bodyText.includes(marker)) {
+        return false;
+      }
+    }
 
-    return hasSidebar > 0 || hasSearch > 0;
+    return false;
   } catch (err) {
     return false;
   }
@@ -247,19 +266,27 @@ async function startBrowser() {
 }
 
 async function ensureWhatsAppPage() {
+  if (!browser || !context) {
+    await startBrowser();
+    return;
+  }
+
+  const pages = context.pages();
+
+  if (pages.length > 0) {
+    page = pages[pages.length - 1];
+  }
+
   if (!page) {
-    if (!browser || !context) {
-      await startBrowser();
-    } else {
-      page = await context.newPage();
-    }
+    page = await context.newPage();
   }
 
   const url = page.url();
 
   if (!url.includes("web.whatsapp.com")) {
     await page.goto("https://web.whatsapp.com", {
-      waitUntil: "domcontentloaded"
+      waitUntil: "domcontentloaded",
+      timeout: 120000
     });
   }
 }
@@ -692,6 +719,68 @@ app.get("/login-code", async (req, res) => {
       ok: false,
       error: err.message
     });
+  }
+});
+
+app.get("/save-auth", async (req, res) => {
+  try {
+    await ensureWhatsAppPage();
+
+    await page.waitForTimeout(5000);
+
+    const bodyText = await page.locator("body").innerText({
+      timeout: 15000
+    });
+
+    const authorized =
+      bodyText.includes("Все") ||
+      bodyText.includes("Непрочитанное") ||
+      bodyText.includes("Избранное") ||
+      bodyText.includes("Нет чатов") ||
+      bodyText.includes("Отправить документ") ||
+      bodyText.includes("Добавить контакт") ||
+      bodyText.includes("All") ||
+      bodyText.includes("Unread") ||
+      bodyText.includes("Favorites") ||
+      bodyText.includes("No chats") ||
+      bodyText.includes("Send document") ||
+      bodyText.includes("Add contact");
+
+    if (!authorized) {
+      return res.json({
+        ok: false,
+        authorized: false,
+        error: "WA Web not authorized",
+        pageText: bodyText.slice(0, 1000)
+      });
+    }
+
+    const saved = await saveAuthState();
+
+    return res.json({
+      ok: true,
+      authorized: true,
+      saved
+    });
+  } catch (err) {
+    return res.json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+app.get("/debug-text", async (req, res) => {
+  try {
+    await ensureWhatsAppPage();
+
+    const text = await page.locator("body").innerText({
+      timeout: 10000
+    });
+
+    res.type("text/plain").send(text);
+  } catch (err) {
+    res.type("text/plain").send(err.message);
   }
 });
 
