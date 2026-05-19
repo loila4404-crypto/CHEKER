@@ -107,19 +107,31 @@ async function isAuthorized() {
   if (!page) return false;
 
   try {
-    const text = await page.locator("body").innerText({ timeout: 5000 });
+    const bodyText =
+      await page.locator("body").innerText({
+        timeout: 5000
+      });
 
     if (
-      text.includes("Scan to log in") ||
-      text.includes("Отсканируйте, чтобы войти") ||
-      text.includes("Log in with phone number") ||
-      text.includes("Войти по номеру телефона")
+      bodyText.includes("Scan to log in") ||
+      bodyText.includes("Отсканируйте, чтобы войти") ||
+      bodyText.includes("Log in with phone number") ||
+      bodyText.includes("Войти по номеру телефона")
     ) {
       return false;
     }
 
-    const inputCount = await page.locator('div[contenteditable="true"]').count();
-    return inputCount > 0;
+    const hasSidebar =
+      await page
+        .locator('[data-testid="chat-list"]')
+        .count();
+
+    const hasSearch =
+      await page
+        .locator('[contenteditable="true"]')
+        .count();
+
+    return hasSidebar > 0 || hasSearch > 0;
   } catch (err) {
     return false;
   }
@@ -320,22 +332,6 @@ async function getLoginCodeByPhone(phone) {
     };
   }
 
-  const bodyBefore =
-    await page
-      .locator("body")
-      .innerText()
-      .catch(() => "");
-
-  if (
-    !bodyBefore.includes(
-      "Log in with phone number"
-    )
-  ) {
-    console.log(
-      "Login by phone button may be hidden or not loaded yet"
-    );
-  }
-
   const loginButton =
     page.getByText(
       /Log in with phone number|Войти по номеру телефона/i
@@ -357,7 +353,12 @@ async function getLoginCodeByPhone(phone) {
     timeout: 20000
   });
 
-  await phoneInput.fill(clean);
+  const localPhone =
+    clean.startsWith("380")
+      ? clean.slice(3)
+      : clean;
+
+  await phoneInput.fill(localPhone);
 
   await page.waitForTimeout(1000);
 
@@ -370,15 +371,47 @@ async function getLoginCodeByPhone(phone) {
       timeout: 15000
     });
 
-  const codeMatch =
+  const directCodeMatch =
     bodyText.match(
       /[A-Z0-9]{4}-[A-Z0-9]{4}/
-    ) ||
-    bodyText.match(
-      /[A-Z0-9]{8}/
     );
 
-  if (!codeMatch) {
+  let code =
+    directCodeMatch
+      ? directCodeMatch[0]
+      : "";
+
+  if (!code) {
+    const lines = bodyText
+      .split("\n")
+      .map(x => x.trim())
+      .filter(Boolean);
+
+    const codeChars = [];
+
+    for (const line of lines) {
+      if (/^[A-Z0-9]$/.test(line)) {
+        codeChars.push(line);
+      }
+
+      if (codeChars.length === 8) {
+        break;
+      }
+    }
+
+    if (codeChars.length === 8) {
+      code =
+        codeChars
+          .slice(0, 4)
+          .join("") +
+        "-" +
+        codeChars
+          .slice(4)
+          .join("");
+    }
+  }
+
+  if (!code) {
     return {
       ok: false,
       authorized: false,
@@ -391,7 +424,7 @@ async function getLoginCodeByPhone(phone) {
     ok: true,
     authorized: false,
     phone: clean,
-    code: codeMatch[0],
+    code,
     message:
       "Open WhatsApp on phone: Linked devices -> Link with phone number, then enter this code"
   };
