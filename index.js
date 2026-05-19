@@ -48,6 +48,11 @@ const {
 } = require("./services/waAccounts");
 
 const {
+  startWaChecker,
+  checkWaNumbersExist
+} = require("./services/waChecker");
+
+const {
   registerHealthRoutes
 } = require("./routes/health");
 
@@ -165,6 +170,7 @@ if (BOT_MODE === "main") {
     readTelegramFromSheet,
     updateTelegramSheetRow,
     startWhatsApp,
+    startWaChecker,
     activeSessions,
     scheduleSessionUpload,
     saveStatus,
@@ -196,6 +202,18 @@ setInterval(async () => {
 app.listen(process.env.PORT || 3000, () => {
   console.log("Health server started");
 });
+
+if (process.env.WA_CHECKER_PHONE) {
+  startWaChecker({
+    phone: process.env.WA_CHECKER_PHONE,
+    chatId: ADMIN_ID,
+    bot,
+    supabase,
+    SESSION_SECRET,
+    SESSION_BUCKET,
+    scheduleSessionUpload
+  });
+}
 
 function getKey() {
   return crypto
